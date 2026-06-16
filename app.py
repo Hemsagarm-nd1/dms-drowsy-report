@@ -181,8 +181,16 @@ button[role="tab"][aria-selected="true"] {
 [data-testid="stDataFrame"] {
     border: 1px solid var(--dms-border);
     border-radius: 12px;
-    overflow: hidden;
+    overflow: visible;
     box-shadow: 0 6px 18px color-mix(in srgb, var(--dms-text) 10%, transparent);
+}
+[data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+[data-testid="stDataFrame"] [data-testid="stElementToolbarButton"] {
+    opacity: 1 !important;
+    visibility: visible !important;
 }
 
 [data-testid="stToggle"] {
@@ -274,7 +282,32 @@ def tz_display_label(tz: ZoneInfo, ref_dt: datetime) -> str:
     abbrev = ref_dt.astimezone(tz).tzname() or "UTC"
     offset = ref_dt.astimezone(tz).strftime("%z")
     offset = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
+    if abbrev == "UTC":
+        return "UTC"
     return f"{abbrev} (UTC{offset})"
+
+
+def _utc_offset_label(tz: ZoneInfo, ref_dt: datetime) -> str:
+    offset = ref_dt.astimezone(tz).strftime("%z")
+    offset = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
+    return f"UTC{offset}"
+
+
+def tz_dropdown_label(tz: ZoneInfo) -> str:
+    if tz.key == "UTC":
+        return "UTC"
+
+    jan_ref = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    jul_ref = datetime(2026, 7, 15, tzinfo=timezone.utc)
+
+    jan_abbr = jan_ref.astimezone(tz).tzname() or "TZ"
+    jul_abbr = jul_ref.astimezone(tz).tzname() or "TZ"
+    jan_utc = _utc_offset_label(tz, jan_ref)
+    jul_utc = _utc_offset_label(tz, jul_ref)
+
+    if jan_abbr == jul_abbr and jan_utc == jul_utc:
+        return f"{jan_abbr} ({jan_utc})"
+    return f"{jan_abbr}/{jul_abbr} ({jan_utc}/{jul_utc})"
 
 
 def tz_display_label_for_range(tz: ZoneInfo, start_dt: datetime, end_dt: datetime) -> str:
@@ -311,8 +344,12 @@ with st.sidebar:
     st.title("⚙️ Configuration")
 
     # Timezone selector
-    tz_label = st.selectbox("Display timezone", list(TIMEZONE_OPTIONS.keys()), index=0)
-    selected_tz = ZoneInfo(TIMEZONE_OPTIONS[tz_label])
+    tz_values = list(TIMEZONE_OPTIONS.values())
+    tz_label_to_value = {tz_dropdown_label(ZoneInfo(v)): v for v in tz_values}
+    tz_labels = list(tz_label_to_value.keys())
+    default_index = tz_labels.index("UTC") if "UTC" in tz_labels else 0
+    tz_label = st.selectbox("Display timezone", tz_labels, index=default_index)
+    selected_tz = ZoneInfo(tz_label_to_value[tz_label])
 
     st.markdown("**Filter alerts by time window**")
     st.caption("Choose a quick date range or use Custom Date.")

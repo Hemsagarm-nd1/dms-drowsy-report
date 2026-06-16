@@ -45,10 +45,10 @@ EVENT_CODE_NAMES = {
 
 # Timezones available in the dashboard
 TIMEZONE_OPTIONS = {
-    "UTC":            "UTC",
+    "UTC (UTC+00:00)": "UTC",
     "IST (UTC+5:30)": "Asia/Kolkata",
-    "Eastern Time (EST/EDT)":   "America/New_York",
-    "Central Time (CST/CDT)":    "America/Chicago",
-    "Mountain Time (MST/MDT)":   "America/Denver",
-    "Pacific Time (PST/PDT)":    "America/Los_Angeles",
+    "EST/EDT (UTC-5/UTC-4)":   "America/New_York",
+    "CST/CDT (UTC-6/UTC-5)":    "America/Chicago",
+    "MST/MDT (UTC-7/UTC-6)":   "America/Denver",
+    "PST/PDT (UTC-8/UTC-7)":    "America/Los_Angeles",
 }
