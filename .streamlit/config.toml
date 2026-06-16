@@ -1,0 +1,6 @@
+[server]
+baseUrlPath = "DMS-Drowsy-Report"
+headless = true
+
+[browser]
+gatherUsageStats = false

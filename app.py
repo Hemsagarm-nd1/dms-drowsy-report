@@ -270,6 +270,21 @@ def fmt_ts(ts, tz: ZoneInfo) -> str:
     return str(ts)
 
 
+def tz_display_label(tz: ZoneInfo, ref_dt: datetime) -> str:
+    abbrev = ref_dt.astimezone(tz).tzname() or "UTC"
+    offset = ref_dt.astimezone(tz).strftime("%z")
+    offset = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
+    return f"{abbrev} (UTC{offset})"
+
+
+def tz_display_label_for_range(tz: ZoneInfo, start_dt: datetime, end_dt: datetime) -> str:
+    start_label = tz_display_label(tz, start_dt)
+    end_label = tz_display_label(tz, end_dt)
+    if start_label == end_label:
+        return start_label
+    return f"{start_label} → {end_label}"
+
+
 def build_display_df(rows: list[dict]) -> pd.DataFrame:
     records = []
     for r in rows:
@@ -370,7 +385,7 @@ with st.sidebar:
 
     st.caption(
         f"Selected: {local_start.strftime('%Y-%m-%d %H:%M')} to "
-        f"{local_end.strftime('%Y-%m-%d %H:%M')} {tz_label.split()[0]}"
+        f"{local_end.strftime('%Y-%m-%d %H:%M')} {tz_display_label_for_range(selected_tz, local_start, local_end)}"
     )
 
     if st.button("🔍 Apply time window", use_container_width=True):
@@ -391,7 +406,7 @@ with st.sidebar:
         st.info(
             f"**Showing alerts window**\n\n"
             f"{stored_start_local.strftime('%Y-%m-%d %H:%M')} to "
-            f"{stored_end_local.strftime('%Y-%m-%d %H:%M')} {tz_label.split()[0]}"
+            f"{stored_end_local.strftime('%Y-%m-%d %H:%M')} {tz_display_label_for_range(selected_tz, stored_start_local, stored_end_local)}"
         )
     else:
         st.warning("No time window set yet.")
@@ -479,7 +494,7 @@ def render_table(rows):
         st.info("No alerts for this fleet.")
         return
     display_df = build_display_df(rows)
-    tz_short = tz_label.split()[0]
+    tz_short = tz_display_label(selected_tz, datetime.now(selected_tz))
     rename_map = {}
     if "Alert Time Stamp" in display_df.columns:
         rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
