@@ -327,6 +327,10 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
             record["time_stamp"] = fmt_ts(record.get("time_stamp"), selected_tz)
         if "Alert Time Stamp" in record:
             record["Alert Time Stamp"] = fmt_ts(record.get("Alert Time Stamp"), selected_tz)
+        if "Alert Created On" in record:
+            record["Alert Created On"] = fmt_ts(record.get("Alert Created On"), selected_tz)
+        if "Action taken On" in record:
+            record["Action taken On"] = fmt_ts(record.get("Action taken On"), selected_tz)
         if "created_on" in record:
             record["created_on"] = fmt_ts(record.get("created_on"), selected_tz)
         if "Created On" in record:
@@ -536,6 +540,10 @@ def render_table(rows, key: str = "table"):
     rename_map = {}
     if "Alert Time Stamp" in display_df.columns:
         rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
+    if "Alert Created On" in display_df.columns:
+        rename_map["Alert Created On"] = f"Alert Created On ({tz_short})"
+    if "Action taken On" in display_df.columns:
+        rename_map["Action taken On"] = f"Action taken On ({tz_short})"
     if "Created On" in display_df.columns:
         rename_map["Created On"] = f"Created On ({tz_short})"
     if "time_stamp" in display_df.columns:
@@ -545,8 +553,19 @@ def render_table(rows, key: str = "table"):
     if rename_map:
         display_df = display_df.rename(columns=rename_map)
 
+    def _sla_style(val):
+        if val == "PASSED":
+            return "color: green; font-weight: bold;"
+        if val == "FAILED":
+            return "color: red; font-weight: bold;"
+        return ""
+
+    table_data = display_df
+    if "Action SLA Status" in display_df.columns:
+        table_data = display_df.style.map(_sla_style, subset=["Action SLA Status"])
+
     st.dataframe(
-        display_df,
+        table_data,
         use_container_width=True,
         hide_index=True,
         height=500,

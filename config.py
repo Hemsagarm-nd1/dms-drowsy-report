@@ -10,6 +10,14 @@ DB_NAME = os.getenv("DB_NAME", "beta-prod-idms-db")
 DB_USER = os.getenv("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD")
 
+# Read-only database (used to fetch alert creation time from NDALERTS).
+# Same DB name / user / password as the primary, only the host differs.
+RO_DB_HOST = os.getenv("RO_DB_HOST", "pg-production-ro.netradyne.info")
+RO_DB_PORT = int(os.getenv("RO_DB_PORT", str(DB_PORT)))
+RO_DB_NAME = os.getenv("RO_DB_NAME", DB_NAME)
+RO_DB_USER = os.getenv("RO_DB_USER") or DB_USER
+RO_DB_PASSWORD = os.getenv("RO_DB_PASSWORD") or DB_PASSWORD
+
 # Polling
 POLL_INTERVAL_SECONDS = 30
 

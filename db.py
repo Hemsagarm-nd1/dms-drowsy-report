@@ -2,7 +2,10 @@ import psycopg2
 import psycopg2.extras
 import decimal
 from datetime import datetime
-from config import DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
+from config import (
+    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
+    RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
+)
 
 
 def _clean(row: dict) -> dict:
@@ -26,6 +29,47 @@ def get_connection():
         password=DB_PASSWORD,
         connect_timeout=10,
     )
+
+
+def get_ro_connection():
+    """Open and return a new read-only PostgreSQL connection (NDALERTS lookup)."""
+    return psycopg2.connect(
+        host=RO_DB_HOST,
+        port=RO_DB_PORT,
+        dbname=RO_DB_NAME,
+        user=RO_DB_USER,
+        password=RO_DB_PASSWORD,
+        connect_timeout=10,
+    )
+
+
+def fetch_alert_created_on(alert_ids: list) -> dict:
+    """
+    Look up alert creation timestamps from NDALERTS on the read-only DB.
+    Returns a mapping of alert_id (as str) -> created_on datetime.
+    """
+    # Use the column's native (numeric) type so the index on alert_id is used.
+    # Casting the column to text would force a sequential scan over NDALERTS.
+    ids = []
+    for a in alert_ids:
+        if a is None:
+            continue
+        try:
+            ids.append(int(a))
+        except (TypeError, ValueError):
+            continue
+    ids = list(set(ids))
+    if not ids:
+        return {}
+
+    sql = 'SELECT alert_id, created_on FROM ndalerts WHERE alert_id = ANY(%s)'
+    conn = get_ro_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (ids,))
+            return {str(alert_id): created_on for alert_id, created_on in cur.fetchall()}
+    finally:
+        conn.close()
 
 
 def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
@@ -65,6 +109,7 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
             FROM action_data
         )
         SELECT
+            alert_id AS "Alert ID",
             tenant_id AS "Tenant ID",
             driver_id AS "Driver ID",
             vehicle_id AS "Vehicle ID",
@@ -79,10 +124,10 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
                 ELSE CAST(action_type AS TEXT)
             END AS "Action Type",
             comment AS "Comment",
-            alert_id AS "Alert ID",
             user_id AS "User ID",
             alert_time_stamp AS "Alert Time Stamp",
-            created_on AS "Created On",
+            CAST(NULL AS TIMESTAMP) AS "Alert Created On",
+            created_on AS "Action taken On",
             CAST(action_minutes AS INT) AS "Action taken in Minutes",
             CASE
                 WHEN action_minutes <= 5 THEN 'PASSED'
@@ -99,6 +144,20 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
             cur.execute(sql, (start_naive, end_naive))
             rows = cur.fetchall()
             # Convert RealDictRow → plain dict so callers can freely mutate
-            return [_clean(dict(row)) for row in rows]
+            results = [_clean(dict(row)) for row in rows]
     finally:
         conn.close()
+
+    # Enrich with NDALERTS.created_on from the read-only DB and recompute
+    # "Action taken in Minutes" = Action taken On - Alert Created On.
+    created_on_by_alert = fetch_alert_created_on([r.get("Alert ID") for r in results])
+    for row in results:
+        alert_created = created_on_by_alert.get(str(row.get("Alert ID")))
+        row["Alert Created On"] = alert_created
+        action_on = row.get("Action taken On")
+        if alert_created is not None and action_on is not None:
+            minutes = int((action_on - alert_created).total_seconds() / 60)
+            row["Action taken in Minutes"] = minutes
+            row["Action SLA Status"] = "PASSED" if minutes <= 5 else "FAILED"
+
+    return results
