@@ -68,7 +68,16 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
             tenant_id AS "Tenant ID",
             driver_id AS "Driver ID",
             vehicle_id AS "Vehicle ID",
-            action_type AS "Action Type",
+            CASE action_type
+                WHEN 1 THEN 'View only'
+                WHEN 2 THEN 'Comment only'
+                WHEN 3 THEN 'Added to watchlist'
+                WHEN 4 THEN 'Removed from watchlist'
+                WHEN 5 THEN 'No action needed'
+                WHEN 6 THEN 'Contact successful'
+                WHEN 7 THEN 'Contact unsuccessful'
+                ELSE CAST(action_type AS TEXT)
+            END AS "Action Type",
             comment AS "Comment",
             alert_id AS "Alert ID",
             user_id AS "User ID",

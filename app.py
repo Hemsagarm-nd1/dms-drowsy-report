@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sqlite3
 import time as _time
 from datetime import datetime, timedelta, timezone, time as dt_time
@@ -347,7 +348,7 @@ with st.sidebar:
     tz_values = list(TIMEZONE_OPTIONS.values())
     tz_label_to_value = {tz_dropdown_label(ZoneInfo(v)): v for v in tz_values}
     tz_labels = list(tz_label_to_value.keys())
-    default_index = tz_labels.index("UTC") if "UTC" in tz_labels else 0
+    default_index = 1 if len(tz_labels) > 1 else 0
     tz_label = st.selectbox("Display timezone", tz_labels, index=default_index)
     selected_tz = ZoneInfo(tz_label_to_value[tz_label])
 
@@ -526,7 +527,7 @@ with refresh_col:
 tab_all, tab_amazon, tab_abc = st.tabs(["📋 All Alerts", "🚛 Amazon AFP", "🏗️ ABC Supply"])
 
 
-def render_table(rows):
+def render_table(rows, key: str = "table"):
     if not rows:
         st.info("No alerts for this fleet.")
         return
@@ -550,14 +551,28 @@ def render_table(rows):
         hide_index=True,
         height=500,
     )
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        display_df.to_excel(writer, index=False, sheet_name="Alerts")
+    range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
+    range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
+    range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
+    st.download_button(
+        label="⬇️ Download as Excel (.xlsx)",
+        data=buffer.getvalue(),
+        file_name=f"dms_drowsy_report_{key}_{range_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_xlsx_{key}",
+    )
     st.caption(f"{len(display_df)} alert(s) shown")
 
 
 with tab_all:
-    render_table(alerts)
+    render_table(alerts, key="all")
 
 with tab_amazon:
-    render_table(amazon_alerts)
+    render_table(amazon_alerts, key="amazon")
 
 with tab_abc:
-    render_table(abc_alerts)
+    render_table(abc_alerts, key="abc")
