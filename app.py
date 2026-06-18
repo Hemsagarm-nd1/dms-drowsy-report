@@ -735,6 +735,8 @@ with filters_container:
     range_label = st.selectbox(
         "Date range",
         [
+            "Last 1 Hour",
+            "Last 6 Hours",
             "Last 12 Hours",
             "Last 24 Hours",
             "Today",
@@ -747,14 +749,18 @@ with filters_container:
             "Last 30 Days",
             "Custom Date",
         ],
-        index=6,
+        index=3, # "Last 24 Hours"
         key="range_label",
     )
 
     local_start = now_local - timedelta(days=7)
     local_end = now_local
 
-    if range_label == "Last 12 Hours":
+    if range_label == "Last 1 Hour":
+        local_start = now_local - timedelta(hours=1)
+    elif range_label == "Last 6 Hours":
+        local_start = now_local - timedelta(hours=6)
+    elif range_label == "Last 12 Hours":
         local_start = now_local - timedelta(hours=12)
     elif range_label == "Last 24 Hours":
         local_start = now_local - timedelta(hours=24)
@@ -785,17 +791,50 @@ with filters_container:
     elif range_label == "Last 30 Days":
         local_start = now_local - timedelta(days=30)
     elif range_label == "Custom Date":
-        start_date = st.date_input("Start date", value=now_local.date(), key="start_date")
-        start_time = st.time_input("Start time", value=dt_time(0, 0), key="start_time", step=60)
-        end_date = st.date_input("End date", value=now_local.date(), key="end_date")
-        end_time = st.time_input(
-            "End time",
-            value=dt_time(now_local.hour, now_local.minute),
-            key="end_time",
-            step=60,
-        )
-        local_start = datetime.combine(start_date, start_time, tzinfo=selected_tz)
-        local_end = datetime.combine(end_date, end_time, tzinfo=selected_tz)
+        manual_input = st.toggle("Type date/time manually", value=False, key="custom_manual_mode")
+
+        if manual_input:
+            st.caption("Format: YYYY-MM-DD HH:MM")
+            default_start_str = (now_local - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M")
+            default_end_str = now_local.strftime("%Y-%m-%d %H:%M")
+            start_raw = st.text_input("Start", value=default_start_str, key="custom_start_text")
+            end_raw = st.text_input("End", value=default_end_str, key="custom_end_text")
+
+            try:
+                start_naive = datetime.strptime(start_raw.strip(), "%Y-%m-%d %H:%M")
+                end_naive = datetime.strptime(end_raw.strip(), "%Y-%m-%d %H:%M")
+                local_start = start_naive.replace(tzinfo=selected_tz)
+                local_end = end_naive.replace(tzinfo=selected_tz)
+            except ValueError:
+                st.error("Invalid format. Use YYYY-MM-DD HH:MM")
+                local_start = now_local - timedelta(hours=24)
+                local_end = now_local
+        else:
+            # Streamlit's date_input supports range selection with a tuple.
+            dates = st.date_input(
+                "Select Date Range",
+                value=(now_local.date() - timedelta(days=1), now_local.date()),
+                max_value=now_local.date(),
+                key="custom_date_range",
+            )
+
+            # Handle the case where user has only clicked the first date.
+            if isinstance(dates, (list, tuple)) and len(dates) == 2:
+                start_date, end_date = dates
+            else:
+                start_date = dates[0] if (isinstance(dates, (list, tuple)) and len(dates) > 0) else now_local.date()
+                end_date = start_date
+
+            t1, t2 = st.columns(2)
+            with t1:
+                start_time = st.time_input("Start Time", value=dt_time(0, 0), key="start_time")
+            with t2:
+                end_time = st.time_input(
+                    "End Time", value=dt_time(now_local.hour, now_local.minute), key="end_time"
+                )
+
+            local_start = datetime.combine(start_date, start_time, tzinfo=selected_tz)
+            local_end = datetime.combine(end_date, end_time, tzinfo=selected_tz)
 
     st.caption(
         f"Selected: {local_start.strftime('%Y-%m-%d %H:%M')} to "
@@ -852,14 +891,11 @@ if st.session_state.get("alerts_window_key") != window_key_str:
     else:
         # 2. Fetch from database
         try:
-            # Show a targeted spinner only when actually hitting the DB
-            with st.status("Refreshing data from server...", expanded=False) as status:
-                st.session_state["db_fetch_count"] += 1
-                rows = fetch_alerts(stored_start, stored_end)
-                # Store in local cache
-                set_cached_alerts(window_key_str, rows)
-                status.update(label=f"Database Refresh #{st.session_state['db_fetch_count']} Complete!", state="complete", expanded=False)
-            
+            st.session_state["db_fetch_count"] += 1
+            rows = fetch_alerts(stored_start, stored_end)
+            # Store in local cache
+            set_cached_alerts(window_key_str, rows)
+
             st.session_state["alerts_for_window"] = rows
             st.session_state["alerts_window_key"] = window_key_str
         except Exception as exc:
