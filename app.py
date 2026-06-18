@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sqlite3
 import time as _time
 from datetime import datetime, timedelta, timezone, time as dt_time
@@ -320,7 +321,7 @@ if st.session_state["auto_refresh_enabled"]:
     st_autorefresh(interval=30_000, key="dashboard_refresh")
 
 
-# ── SQLite helpers (shared with notifier) ─────────────────────────────────────
+# ── SQLite helpers (Local Cache) ──────────────────────────────────────────────
 
 def _db():
     conn = sqlite3.connect(SQLITE_DB_PATH, timeout=10)
@@ -335,7 +336,35 @@ def _ensure_tables():
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS alerts_cache (
+            window_key TEXT PRIMARY KEY,
+            data_json  TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
+    conn.commit()
+    conn.close()
+
+
+def get_cached_alerts(window_key: str) -> list[dict] | None:
+    conn = _db()
+    row = conn.execute(
+        "SELECT data_json FROM alerts_cache WHERE window_key = ?", (window_key,)
+    ).fetchone()
+    conn.close()
+    if row:
+        return json.loads(row[0])
+    return None
+
+
+def set_cached_alerts(window_key: str, data: list[dict]):
+    conn = _db()
+    # Optional: Clear old cache entries to keep DB small
+    conn.execute("DELETE FROM alerts_cache WHERE window_key != ?", (window_key,))
+    conn.execute(
+        "INSERT OR REPLACE INTO alerts_cache (window_key, data_json) VALUES (?, ?)",
+        (window_key, json.dumps(data, default=str)),
+    )
     conn.commit()
     conn.close()
 
@@ -454,6 +483,10 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 _ensure_tables()
+
+# Debug: Track if we are hitting the DB
+if "db_fetch_count" not in st.session_state:
+    st.session_state["db_fetch_count"] = 0
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -681,13 +714,6 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
-    page = st.radio(
-        "Page",
-        ["Home", "Data"],
-        key="nav_page",
-        label_visibility="collapsed",
-    )
-    st.divider()
 
 # ── Layout: content + left filters ───────────────────────────────────────────
 
@@ -810,15 +836,36 @@ if stored_start is None or stored_end is None:
         st.info("Set a start and end time in the left Filters panel to begin monitoring.")
     st.stop()
 
-window_key = (stored_start.isoformat(), stored_end.isoformat())
-if st.session_state.get("alerts_window_key") != window_key:
-    try:
-        st.session_state["alerts_for_window"] = fetch_alerts(stored_start, stored_end)
-        st.session_state["alerts_window_key"] = window_key
-    except Exception as exc:
-        with content_col:
-            st.error(f"Database error: {exc}")
-        st.stop()
+window_key_str = f"{stored_start.isoformat()}_{stored_end.isoformat()}"
+if st.session_state.get("alerts_window_key") != window_key_str:
+    # Always clear UI-only filters when the time window changes
+    # to maintain consistency with the new dataset.
+    for k in ["fleet_filter", "sla_filter", "type_filter"]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    # 1. Check local persistent cache
+    cached = get_cached_alerts(window_key_str)
+    if cached is not None:
+        st.session_state["alerts_for_window"] = cached
+        st.session_state["alerts_window_key"] = window_key_str
+    else:
+        # 2. Fetch from database
+        try:
+            # Show a targeted spinner only when actually hitting the DB
+            with st.status("Refreshing data from server...", expanded=False) as status:
+                st.session_state["db_fetch_count"] += 1
+                rows = fetch_alerts(stored_start, stored_end)
+                # Store in local cache
+                set_cached_alerts(window_key_str, rows)
+                status.update(label=f"Database Refresh #{st.session_state['db_fetch_count']} Complete!", state="complete", expanded=False)
+            
+            st.session_state["alerts_for_window"] = rows
+            st.session_state["alerts_window_key"] = window_key_str
+        except Exception as exc:
+            with content_col:
+                st.error(f"Database error: {exc}")
+            st.stop()
 
 alerts = st.session_state.get("alerts_for_window", [])
 
@@ -828,26 +875,22 @@ with filters_container:
 
     fleet_options = sorted({a.get("Tenant Name") for a in alerts if a.get("Tenant Name")})
     selected_fleets = st.multiselect(
-        "Fleet", fleet_options, default=fleet_options, key="fleet_filter"
+        "Fleet", fleet_options, default=st.session_state.get("fleet_filter", fleet_options), key="fleet_filter"
     )
 
     sla_options = sorted({a.get("SLA Compliance") for a in alerts if a.get("SLA Compliance")})
     selected_sla = st.multiselect(
-        "SLA Compliance", sla_options, default=sla_options, key="sla_filter"
+        "SLA Compliance", sla_options, default=st.session_state.get("sla_filter", sla_options), key="sla_filter"
     )
 
     type_options = sorted({a.get("Action Type") for a in alerts if a.get("Action Type")})
     selected_types = st.multiselect(
-        "Action Type", type_options, default=type_options, key="type_filter"
+        "Action Type", type_options, default=st.session_state.get("type_filter", type_options), key="type_filter"
     )
 
-    # Volume granularity only affects the Home page charts.
-    if page == "Home":
-        granularity = st.selectbox(
-            "Volume granularity", ["Hourly", "Daily", "Weekly"], key="granularity"
-        )
-    else:
-        granularity = st.session_state.get("granularity", "Hourly")
+    granularity = st.selectbox(
+        "Volume granularity", ["Hourly", "Daily", "Weekly"], key="granularity"
+    )
 
     st.divider()
     auto_refresh_value = st.toggle(
@@ -883,7 +926,10 @@ with content_col:
 
     if not alerts:
         st.success("No drowsy alerts found in the selected time window.")
-    elif page == "Home":
-        render_home(filtered, selected_tz, granularity)
     else:
+        # Render charts first
+        render_home(filtered, selected_tz, granularity)
+        st.divider()
+        # Render data table below
+        st.subheader("Alert Details")
         render_table(filtered, key="data")

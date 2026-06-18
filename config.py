@@ -21,8 +21,8 @@ RO_DB_PASSWORD = os.getenv("RO_DB_PASSWORD") or DB_PASSWORD
 # Polling
 POLL_INTERVAL_SECONDS = 30
 
-# Local SQLite path (shared between notifier and dashboard)
-SQLITE_DB_PATH = "notifier_state.db"
+# Local cache path
+SQLITE_DB_PATH = "dashboard_cache.db"
 
 # Fleet definitions
 TENANT_IDS = [20220, 7960]
