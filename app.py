@@ -76,6 +76,40 @@ st.markdown("""
     max-width: 100%;
 }
 
+[data-testid="stMainBlockContainer"] {
+    padding-top: 0.35rem !important;
+}
+
+[data-testid="stAppViewContainer"] .main > div {
+    padding-top: 0 !important;
+}
+
+/* Keep header visible so sidebar reopen control remains available */
+header[data-testid="stHeader"] {
+    background: transparent !important;
+}
+
+[data-testid="stToolbar"] {
+    right: 0.5rem;
+}
+
+/* Hide top-right deploy/running widgets */
+[data-testid="stDeployButton"],
+[data-testid="stStatusWidget"],
+[data-testid="stToolbarActions"] {
+    display: none !important;
+}
+
+[data-testid="stDecoration"] {
+    display: none !important;
+}
+
+#MainMenu,
+footer {
+    visibility: hidden;
+    height: 0;
+}
+
 h1, h2, h3 {
     letter-spacing: 0.01em;
 }
@@ -121,6 +155,18 @@ section[data-testid="stSidebar"] [data-testid="stAlert"] {
 
 section[data-testid="stSidebar"] > div:first-child {
     padding-top: 0 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+    padding-top: 0.2rem !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    padding-top: 0 !important;
+}
+
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] > div:first-child {
+    margin-top: 0 !important;
 }
 
 section[data-testid="stSidebar"] h1 {
@@ -170,6 +216,32 @@ section[data-testid="stSidebar"] h1 {
 .dms-nav-sub {
     font-size: 0.72rem;
     color: var(--dms-sidebar-muted);
+}
+
+/* Main report header (top of page) */
+.dms-main-header {
+    display: block;
+    padding: 0.85rem 1rem;
+    margin: 0.35rem 0 0.9rem 0;
+    border: 1px solid var(--dms-border);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--dms-panel) 92%, transparent);
+    box-shadow: var(--dms-shadow);
+}
+
+.dms-main-title {
+    margin: 0;
+    font-size: 1.85rem;
+    font-weight: 800;
+    line-height: 1.15;
+    color: var(--dms-text);
+}
+
+.dms-main-sub {
+    margin-top: 0.3rem;
+    font-size: 0.98rem;
+    font-weight: 500;
+    color: var(--dms-muted);
 }
 
 /* Sidebar page navigation styled as nav items */
@@ -276,17 +348,37 @@ section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
 }
 
 [data-baseweb="tab-list"] {
-    gap: 0.45rem;
+    gap: 0.55rem;
+    background: transparent;
 }
 
-button[role="tab"] {
-    border-radius: 10px 10px 0 0 !important;
+[data-baseweb="tab-list"] button[role="tab"] {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 2.7rem;
+    border-radius: 12px !important;
+    border: 1px solid var(--dms-border) !important;
+    background: color-mix(in srgb, var(--dms-panel) 88%, transparent) !important;
+    color: var(--dms-muted) !important;
+    font-weight: 600;
     padding: 0.5rem 0.8rem !important;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-button[role="tab"][aria-selected="true"] {
+[data-baseweb="tab-list"] button[role="tab"]:hover {
+    border-color: color-mix(in srgb, var(--dms-accent) 42%, var(--dms-border)) !important;
+    color: var(--dms-text) !important;
+}
+
+[data-baseweb="tab-list"] button[role="tab"][aria-selected="true"] {
     color: var(--dms-accent) !important;
-    border-bottom-color: var(--dms-accent) !important;
+    border-color: color-mix(in srgb, var(--dms-accent) 62%, var(--dms-border)) !important;
+    background: color-mix(in srgb, var(--dms-panel) 96%, transparent) !important;
+    box-shadow: inset 0 -2px 0 var(--dms-accent) !important;
+}
+
+[data-baseweb="tab-highlight"] {
+    display: none !important;
 }
 
 [data-testid="stDataFrame"] {
@@ -419,17 +511,7 @@ def fmt_ts(ts, tz: ZoneInfo) -> str:
 
 def tz_display_label(tz: ZoneInfo, ref_dt: datetime) -> str:
     abbrev = ref_dt.astimezone(tz).tzname() or "UTC"
-    offset = ref_dt.astimezone(tz).strftime("%z")
-    offset = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
-    if abbrev == "UTC":
-        return "UTC"
-    return f"{abbrev} (UTC{offset})"
-
-
-def _utc_offset_label(tz: ZoneInfo, ref_dt: datetime) -> str:
-    offset = ref_dt.astimezone(tz).strftime("%z")
-    offset = f"{offset[:3]}:{offset[3:]}" if len(offset) == 5 else offset
-    return f"UTC{offset}"
+    return "UTC" if abbrev == "UTC" else abbrev
 
 
 def tz_dropdown_label(tz: ZoneInfo) -> str:
@@ -441,12 +523,10 @@ def tz_dropdown_label(tz: ZoneInfo) -> str:
 
     jan_abbr = jan_ref.astimezone(tz).tzname() or "TZ"
     jul_abbr = jul_ref.astimezone(tz).tzname() or "TZ"
-    jan_utc = _utc_offset_label(tz, jan_ref)
-    jul_utc = _utc_offset_label(tz, jul_ref)
 
-    if jan_abbr == jul_abbr and jan_utc == jul_utc:
-        return f"{jan_abbr} ({jan_utc})"
-    return f"{jan_abbr}/{jul_abbr} ({jan_utc}/{jul_utc})"
+    if jan_abbr == jul_abbr:
+        return jan_abbr
+    return f"{jan_abbr}/{jul_abbr}"
 
 
 def tz_display_label_for_range(tz: ZoneInfo, start_dt: datetime, end_dt: datetime) -> str:
@@ -467,8 +547,8 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
             record["Alert Time Stamp"] = fmt_ts(record.get("Alert Time Stamp"), selected_tz)
         if "Alert Created on Cloud" in record:
             record["Alert Created on Cloud"] = fmt_ts(record.get("Alert Created on Cloud"), selected_tz)
-        if "Action taken On" in record:
-            record["Action taken On"] = fmt_ts(record.get("Action taken On"), selected_tz)
+        if "Initial Action taken On" in record:
+            record["Initial Action taken On"] = fmt_ts(record.get("Initial Action taken On"), selected_tz)
         if "created_on" in record:
             record["created_on"] = fmt_ts(record.get("created_on"), selected_tz)
         if "Created On" in record:
@@ -477,6 +557,8 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(records)
     if "Driver ID" in df.columns:
         df["Driver ID"] = pd.to_numeric(df["Driver ID"], errors="coerce").astype("Int64")
+    if "Action taken in Minutes" in df.columns:
+        df["Action taken in Minutes"] = pd.to_numeric(df["Action taken in Minutes"], errors="coerce").astype("Int64")
     return df
 
 
@@ -498,8 +580,8 @@ SLA_COLOR_SCALE = alt.Scale(
 )
 
 
-def render_pie(rows: list[dict], field: str, color_scale=None):
-    vals = [(r.get(field) if r.get(field) not in (None, "") else "None") for r in rows]
+def render_pie(rows: list[dict], field: str, color_scale=None, missing_label: str = "None"):
+    vals = [(r.get(field) if r.get(field) not in (None, "") else missing_label) for r in rows]
     src = pd.DataFrame({field: vals})
     agg = src.groupby(field).size().reset_index(name="count")
     if agg.empty:
@@ -629,7 +711,7 @@ def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
         render_pie(rows, "Tenant Name")
     with p3:
         st.markdown("**Action Type**")
-        render_pie(rows, "Action Type")
+        render_pie(rows, "Action Type", missing_label="Missed")
     st.subheader("Alert Volume Over Time")
     render_volume_chart(rows, tz, granularity)
     st.subheader("Alert Volume by SLA Status")
@@ -647,8 +729,8 @@ def render_table(rows: list[dict], key: str = "data"):
         rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
     if "Alert Created on Cloud" in display_df.columns:
         rename_map["Alert Created on Cloud"] = f"Alert Created on Cloud ({tz_short})"
-    if "Action taken On" in display_df.columns:
-        rename_map["Action taken On"] = f"Action taken On ({tz_short})"
+    if "Initial Action taken On" in display_df.columns:
+        rename_map["Initial Action taken On"] = f"Initial Action taken On ({tz_short})"
     if rename_map:
         display_df = display_df.rename(columns=rename_map)
 
@@ -699,26 +781,21 @@ def render_table(rows: list[dict], key: str = "data"):
     st.caption(f"{len(display_df)} alert(s) shown")
 
 
-# ── Sidebar: page navigation ──────────────────────────────────────────────────
-
-with st.sidebar:
-    st.markdown(
-        """
-        <div class="dms-nav-brand">
-            <div>
-                <div class="dms-nav-title">DMS Drowsy Report</div>
-                <div class="dms-nav-sub">Monitoring fleets: Amazon AFP (tenant 20220) · ABC Supply (tenant 7960)</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.divider()
-
 # ── Layout: content + left filters ───────────────────────────────────────────
 
 content_col = st.container()
 filters_container = st.sidebar
+
+with content_col:
+    st.markdown(
+        """
+        <div class="dms-main-header">
+            <div class="dms-main-title">DMS Drowsy Report Dashboard</div>
+            <div class="dms-main-sub">Monitoring fleets: Amazon AFP (tenant 20220) · ABC Supply (tenant 7960)</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # Time-window + timezone filters (needed before fetching data).
 with filters_container:
@@ -875,14 +952,8 @@ if stored_start is None or stored_end is None:
         st.info("Set a start and end time in the left Filters panel to begin monitoring.")
     st.stop()
 
-window_key_str = f"{stored_start.isoformat()}_{stored_end.isoformat()}"
+window_key_str = f"v2_user_name_{stored_start.isoformat()}_{stored_end.isoformat()}"
 if st.session_state.get("alerts_window_key") != window_key_str:
-    # Always clear UI-only filters when the time window changes
-    # to maintain consistency with the new dataset.
-    for k in ["fleet_filter", "sla_filter", "type_filter"]:
-        if k in st.session_state:
-            del st.session_state[k]
-
     # 1. Check local persistent cache
     cached = get_cached_alerts(window_key_str)
     if cached is not None:
@@ -909,20 +980,29 @@ alerts = st.session_state.get("alerts_for_window", [])
 with filters_container:
     st.divider()
 
+    def _action_type_value(v):
+        return v if v not in (None, "") else "Missed"
+
     fleet_options = sorted({a.get("Tenant Name") for a in alerts if a.get("Tenant Name")})
-    selected_fleets = st.multiselect(
-        "Fleet", fleet_options, default=st.session_state.get("fleet_filter", fleet_options), key="fleet_filter"
-    )
+    if "fleet_filter" not in st.session_state:
+        st.session_state["fleet_filter"] = list(fleet_options)
+    else:
+        st.session_state["fleet_filter"] = [v for v in st.session_state["fleet_filter"] if v in fleet_options]
+    selected_fleets = st.multiselect("Fleet", fleet_options, key="fleet_filter")
 
     sla_options = sorted({a.get("SLA Compliance") for a in alerts if a.get("SLA Compliance")})
-    selected_sla = st.multiselect(
-        "SLA Compliance", sla_options, default=st.session_state.get("sla_filter", sla_options), key="sla_filter"
-    )
+    if "sla_filter" not in st.session_state:
+        st.session_state["sla_filter"] = list(sla_options)
+    else:
+        st.session_state["sla_filter"] = [v for v in st.session_state["sla_filter"] if v in sla_options]
+    selected_sla = st.multiselect("SLA Compliance", sla_options, key="sla_filter")
 
-    type_options = sorted({a.get("Action Type") for a in alerts if a.get("Action Type")})
-    selected_types = st.multiselect(
-        "Action Type", type_options, default=st.session_state.get("type_filter", type_options), key="type_filter"
-    )
+    type_options = sorted({_action_type_value(a.get("Action Type")) for a in alerts})
+    if "type_filter" not in st.session_state:
+        st.session_state["type_filter"] = list(type_options)
+    else:
+        st.session_state["type_filter"] = [v for v in st.session_state["type_filter"] if v in type_options]
+    selected_types = st.multiselect("Action Type", type_options, key="type_filter")
 
     granularity = st.selectbox(
         "Volume granularity", ["Hourly", "Daily", "Weekly"], key="granularity"
@@ -945,8 +1025,8 @@ for a in alerts:
         continue
     if a.get("SLA Compliance") not in selected_sla:
         continue
-    at = a.get("Action Type")
-    if at is not None and at not in selected_types:
+    at = _action_type_value(a.get("Action Type"))
+    if at not in selected_types:
         continue
     filtered.append(a)
 
@@ -958,14 +1038,19 @@ with content_col:
     m1.metric("Total Alerts", len(filtered))
     m2.metric("Amazon AFP", len(amazon_alerts))
     m3.metric("ABC Supply", len(abc_alerts))
-    st.divider()
 
-    if not alerts:
-        st.success("No drowsy alerts found in the selected time window.")
-    else:
-        # Render charts first
-        render_home(filtered, selected_tz, granularity)
-        st.divider()
-        # Render data table below
-        st.subheader("Alert Details")
-        render_table(filtered, key="data")
+
+    reports_tab, graphical_tab = st.tabs(["Reports", "Graphical Representation"])
+
+    with reports_tab:
+        if not alerts:
+            st.success("No drowsy alerts found in the selected time window.")
+        else:
+            st.subheader("Alert Details")
+            render_table(filtered, key="data")
+
+    with graphical_tab:
+        if not alerts:
+            st.success("No drowsy alerts found in the selected time window.")
+        else:
+            render_home(filtered, selected_tz, granularity)
