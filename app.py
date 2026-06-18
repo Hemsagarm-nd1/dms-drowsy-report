@@ -22,6 +22,7 @@ from db import fetch_alerts
 
 st.set_page_config(
     page_title="DMS Drowsy Report",
+    page_icon=" ",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -490,7 +491,7 @@ def apply_volume_granularity(df: pd.DataFrame, granularity: str) -> tuple[str, s
         return "Time", "%Y-%m-%d %H:%M", "hour"
     if granularity == "Weekly":
         df["bucket"] = df["ts"].dt.tz_localize(None).dt.to_period("W-SUN").dt.to_timestamp()
-        return "Week", "'Week of' %Y-%m-%d", "week"
+        return "Week", "%Y-%m-%d", "week"
     df["bucket"] = df["ts"].dt.floor("D")
     return "Date", "%Y-%m-%d", "day"
 
