@@ -3,5 +3,6 @@ streamlit-autorefresh>=1.0.1
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.0
 pandas>=2.2.3
+altair>=5.0.0
 pyarrow>=17.0.0
 openpyxl>=3.1.5

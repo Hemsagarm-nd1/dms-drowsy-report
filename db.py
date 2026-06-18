@@ -5,6 +5,7 @@ from datetime import datetime
 from config import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
     RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
+    EVENT_CODES, TENANT_IDS,
 )
 
 
@@ -43,13 +44,18 @@ def get_ro_connection():
     )
 
 
-def fetch_alert_created_on(alert_ids: list) -> dict:
+def fetch_action_logs(alert_ids: list) -> dict:
     """
-    Look up alert creation timestamps from NDALERTS on the read-only DB.
-    Returns a mapping of alert_id (as str) -> created_on datetime.
+    For the given alert_ids, look up management-action details from
+    ndlivemanagementlogs on the primary DB.
+
+    A single alert can have multiple log entries (one per comment). For each
+    alert_id we return:
+      - the latest comment / action type / user (most recent created_on)
+      - "Action taken On" = the earliest created_on for that alert_id
+
+    Returns a mapping of alert_id (as str) -> dict of those fields.
     """
-    # Use the column's native (numeric) type so the index on alert_id is used.
-    # Casting the column to text would force a sequential scan over NDALERTS.
     ids = []
     for a in alert_ids:
         if a is None:
@@ -62,57 +68,24 @@ def fetch_alert_created_on(alert_ids: list) -> dict:
     if not ids:
         return {}
 
-    sql = 'SELECT alert_id, created_on FROM ndalerts WHERE alert_id = ANY(%s)'
-    conn = get_ro_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(sql, (ids,))
-            return {str(alert_id): created_on for alert_id, created_on in cur.fetchall()}
-    finally:
-        conn.close()
-
-
-def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
-    """
-    Fetch live management actions within a UTC time window.
-    Returns a list of dicts (one per alert row).
-    start_utc and end_utc must be timezone-aware datetimes in UTC.
-    """
-    # Ensure we hand UTC-naive timestamp to Postgres (it stores without tz)
-    start_naive = start_utc.replace(tzinfo=None) if start_utc.tzinfo else start_utc
-    end_naive = end_utc.replace(tzinfo=None) if end_utc.tzinfo else end_utc
-
     sql = """
-        WITH action_data AS (
+        WITH logs AS (
             SELECT
-                tenant_id,
-                driver_id,
-                vehicle_id,
+                alert_id,
                 action_type,
                 comment,
-                alert_id,
                 user_id,
-                alert_time_stamp,
                 created_on,
-                EXTRACT(EPOCH FROM (created_on - alert_time_stamp)) / 60 AS action_minutes
+                ROW_NUMBER() OVER (
+                    PARTITION BY alert_id ORDER BY created_on DESC
+                ) AS rn_latest,
+                MIN(created_on) OVER (PARTITION BY alert_id) AS first_action_on
             FROM ndlivemanagementlogs
-            WHERE alert_severity = 1
-              AND action_type IN (2, 5, 6, 7)
-                            AND alert_time_stamp BETWEEN %s AND %s
-        ),
-        ranked_data AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY vehicle_id, alert_id
-                       ORDER BY alert_time_stamp ASC, created_on ASC
-                   ) AS rn
-            FROM action_data
+            WHERE alert_id = ANY(%s)
+            AND action_type IN (2, 5, 6, 7)
         )
         SELECT
-            alert_id AS "Alert ID",
-            tenant_id AS "Tenant ID",
-            driver_id AS "Driver ID",
-            vehicle_id AS "Vehicle ID",
+            alert_id,
             CASE action_type
                 WHEN 1 THEN 'View only'
                 WHEN 2 THEN 'Comment only'
@@ -122,42 +95,107 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
                 WHEN 6 THEN 'Contact successful'
                 WHEN 7 THEN 'Contact unsuccessful'
                 ELSE CAST(action_type AS TEXT)
-            END AS "Action Type",
-            comment AS "Comment",
-            user_id AS "User ID",
-            alert_time_stamp AS "Alert Time Stamp",
-            CAST(NULL AS TIMESTAMP) AS "Alert Created On",
-            created_on AS "Action taken On",
-            CAST(action_minutes AS INT) AS "Action taken in Minutes",
-            CASE
-                WHEN action_minutes <= 5 THEN 'PASSED'
-                ELSE 'FAILED'
-            END AS "Action SLA Status"
-        FROM ranked_data
-        WHERE rn = 1
-        ORDER BY alert_time_stamp DESC
+            END AS action_type_label,
+            comment,
+            user_id,
+            first_action_on
+        FROM logs
+        WHERE rn_latest = 1
     """
 
     conn = get_connection()
     try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (ids,))
+            out = {}
+            for alert_id, action_type_label, comment, user_id, first_action_on in cur.fetchall():
+                out[str(alert_id)] = {
+                    "Action Type": action_type_label,
+                    "Comment": comment,
+                    "User ID": user_id,
+                    "Action taken On": first_action_on,
+                }
+            return out
+    finally:
+        conn.close()
+
+
+def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
+    """
+    Fetch drowsy alerts within a UTC time window.
+
+    The base list of alerts comes from NDALERTS (read-only DB), because
+    ndlivemanagementlogs only has rows when a comment/action was recorded.
+    Each alert is then enriched with the management-action details (comment,
+    user, action type and the time the action was taken) from
+    ndlivemanagementlogs on the primary DB.
+
+    start_utc and end_utc must be timezone-aware datetimes in UTC.
+    """
+    # Ensure we hand UTC-naive timestamp to Postgres (it stores without tz)
+    start_naive = start_utc.replace(tzinfo=None) if start_utc.tzinfo else start_utc
+    end_naive = end_utc.replace(tzinfo=None) if end_utc.tzinfo else end_utc
+
+    tenant_ids_str = [str(t) for t in TENANT_IDS]
+
+    sql = """
+        SELECT
+            alert_id AS "Alert ID",
+            tenant_id AS "Tenant ID",
+            CASE
+                WHEN tenant_id::text = '20220' THEN 'AFP 2024'
+                WHEN tenant_id::text = '7960'  THEN 'ABC'
+                ELSE 'Others'
+            END AS "Tenant Name",
+            driver_id AS "Driver ID",
+            vehicle_id AS "Vehicle ID",
+            time_stamp AS "Alert Time Stamp",
+            created_on AS "Alert Created on Cloud"
+        FROM ndalerts
+        WHERE tenant_id::text = ANY(%s)
+          AND alert_type = 16
+          AND alert_severity = 1
+          AND alert_confirmation_status = 1
+          AND event_code = ANY(%s)
+          AND time_stamp BETWEEN %s AND %s
+        ORDER BY time_stamp DESC
+    """
+
+    conn = get_ro_connection()
+    try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (start_naive, end_naive))
+            cur.execute(sql, (tenant_ids_str, EVENT_CODES, start_naive, end_naive))
             rows = cur.fetchall()
             # Convert RealDictRow → plain dict so callers can freely mutate
             results = [_clean(dict(row)) for row in rows]
     finally:
         conn.close()
 
-    # Enrich with NDALERTS.created_on from the read-only DB and recompute
-    # "Action taken in Minutes" = Action taken On - Alert Created On.
-    created_on_by_alert = fetch_alert_created_on([r.get("Alert ID") for r in results])
+    # Enrich with management-action details from ndlivemanagementlogs and
+    # compute "Action taken in Minutes" and the "SLA Compliance" verdict.
+    logs_by_alert = fetch_action_logs([r.get("Alert ID") for r in results])
     for row in results:
-        alert_created = created_on_by_alert.get(str(row.get("Alert ID")))
-        row["Alert Created On"] = alert_created
+        log = logs_by_alert.get(str(row.get("Alert ID")))
+        row["Action Type"] = log["Action Type"] if log else None
+        row["Comment"] = log["Comment"] if log else None
+        row["User ID"] = log["User ID"] if log else None
+        row["Action taken On"] = log["Action taken On"] if log else None
+
+        alert_created = row.get("Alert Created on Cloud")
         action_on = row.get("Action taken On")
-        if alert_created is not None and action_on is not None:
+        comment = row.get("Comment")
+
+        if action_on is not None and alert_created is not None:
             minutes = int((action_on - alert_created).total_seconds() / 60)
-            row["Action taken in Minutes"] = minutes
-            row["Action SLA Status"] = "PASSED" if minutes <= 5 else "FAILED"
+        else:
+            minutes = None
+        row["Action taken in Minutes"] = minutes
+
+        if log is None or comment is None or str(comment).strip() == "":
+            row["SLA Compliance"] = "No Action Taken"
+        elif minutes is not None and minutes <= 5:
+            row["SLA Compliance"] = "Compliant"
+        else:
+            row["SLA Compliance"] = "Breached"
 
     return results

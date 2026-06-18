@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import altair as alt
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
@@ -21,7 +22,6 @@ from db import fetch_alerts
 
 st.set_page_config(
     page_title="DMS Drowsy Report",
-    page_icon="📄",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -40,6 +40,8 @@ st.markdown("""
     --dms-border: #dbe7f3;
     --dms-accent: #0284c7;
     --dms-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+    --dms-control-height: 56px;
+    --dms-control-radius: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -122,6 +124,112 @@ section[data-testid="stSidebar"] > div:first-child {
 section[data-testid="stSidebar"] h1 {
     margin-top: 0 !important;
     font-size: 1.75rem;
+}
+
+/* Sidebar brand header */
+.dms-nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-height: var(--dms-control-height);
+    padding: 0.65rem 0.9rem;
+    margin: 0 0 0.35rem 0;
+    box-sizing: border-box;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: var(--dms-control-radius);
+    background: rgba(15, 23, 42, 0.35);
+}
+.dms-nav-logo {
+    width: 1.7rem;
+    min-width: 1.7rem;
+    height: 1.7rem;
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.18rem;
+    padding: 0.32rem;
+    border-radius: 12px;
+    background: rgba(56, 189, 248, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.18);
+}
+.dms-nav-logo span {
+    display: block;
+    height: 2px;
+    width: 100%;
+    border-radius: 999px;
+    background: var(--dms-sidebar-text);
+}
+.dms-nav-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    line-height: 1.1;
+}
+.dms-nav-sub {
+    font-size: 0.72rem;
+    color: var(--dms-sidebar-muted);
+}
+
+/* Sidebar page navigation styled as nav items */
+section[data-testid="stSidebar"] [data-testid="stRadio"] {
+    width: 100% !important;
+    max-width: none !important;
+    margin-bottom: 0 !important;
+}
+section[data-testid="stSidebar"] [data-testid="stRadio"] > div {
+    width: 100% !important;
+    max-width: none !important;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] {
+    width: 100% !important;
+    max-width: none !important;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+section[data-testid="stSidebar"] [data-testid="stDivider"] {
+    margin-top: 0.35rem !important;
+    margin-bottom: 0.75rem !important;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] > label,
+section[data-testid="stSidebar"] [role="radiogroup"] > div,
+section[data-testid="stSidebar"] [role="radiogroup"] [data-baseweb="radio"] {
+    width: 100% !important;
+    max-width: none !important;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] label {
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100% !important;
+    max-width: none !important;
+    flex: 1 1 auto;
+    box-sizing: border-box;
+    min-height: var(--dms-control-height);
+    padding: 0.65rem 0.9rem;
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background: rgba(15, 23, 42, 0.62);
+    border-radius: var(--dms-control-radius);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    background: rgba(148, 163, 184, 0.14);
+    border-color: rgba(148, 163, 184, 0.55);
+}
+section[data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked) {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: rgba(56, 189, 248, 0.9);
+    box-shadow: inset 3px 0 0 var(--dms-accent);
+    font-weight: 600;
+}
+section[data-testid="stSidebar"] [role="radiogroup"] label > div:first-child {
+    display: none;
+}
+
+section[data-testid="stSidebar"] [data-testid="stButton"] > button,
+section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
+    border-radius: 10px;
 }
 
 .sticky-report-header {
@@ -327,8 +435,8 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
             record["time_stamp"] = fmt_ts(record.get("time_stamp"), selected_tz)
         if "Alert Time Stamp" in record:
             record["Alert Time Stamp"] = fmt_ts(record.get("Alert Time Stamp"), selected_tz)
-        if "Alert Created On" in record:
-            record["Alert Created On"] = fmt_ts(record.get("Alert Created On"), selected_tz)
+        if "Alert Created on Cloud" in record:
+            record["Alert Created on Cloud"] = fmt_ts(record.get("Alert Created on Cloud"), selected_tz)
         if "Action taken On" in record:
             record["Action taken On"] = fmt_ts(record.get("Action taken On"), selected_tz)
         if "created_on" in record:
@@ -336,7 +444,10 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
         if "Created On" in record:
             record["Created On"] = fmt_ts(record.get("Created On"), selected_tz)
         records.append(record)
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    if "Driver ID" in df.columns:
+        df["Driver ID"] = pd.to_numeric(df["Driver ID"], errors="coerce").astype("Int64")
+    return df
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────
@@ -345,19 +456,253 @@ _ensure_tables()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
-with st.sidebar:
-    st.title("⚙️ Configuration")
+# ── Chart + table renderers ───────────────────────────────────────────────────
 
-    # Timezone selector
+SLA_COLOR_SCALE = alt.Scale(
+    domain=["Compliant", "Breached", "No Action Taken"],
+    range=["#16a34a", "#a855f7", "#dc2626"],
+)
+
+
+def render_pie(rows: list[dict], field: str, color_scale=None):
+    vals = [(r.get(field) if r.get(field) not in (None, "") else "None") for r in rows]
+    src = pd.DataFrame({field: vals})
+    agg = src.groupby(field).size().reset_index(name="count")
+    if agg.empty:
+        st.info("No data.")
+        return
+    if color_scale is not None:
+        color = alt.Color(f"{field}:N", scale=color_scale, legend=alt.Legend(orient="bottom", title=None))
+    else:
+        color = alt.Color(f"{field}:N", legend=alt.Legend(orient="bottom", title=None))
+    chart = (
+        alt.Chart(agg)
+        .mark_arc(innerRadius=55)
+        .encode(theta="count:Q", color=color, tooltip=[field, "count"])
+        .properties(height=280)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def apply_volume_granularity(df: pd.DataFrame, granularity: str) -> tuple[str, str, str]:
+    if granularity == "Hourly":
+        df["bucket"] = df["ts"].dt.floor("h")
+        return "Time", "%Y-%m-%d %H:%M", "hour"
+    if granularity == "Weekly":
+        df["bucket"] = df["ts"].dt.tz_localize(None).dt.to_period("W-SUN").dt.to_timestamp()
+        return "Week", "'Week of' %Y-%m-%d", "week"
+    df["bucket"] = df["ts"].dt.floor("D")
+    return "Date", "%Y-%m-%d", "day"
+
+
+def render_volume_chart(rows: list[dict], tz: ZoneInfo, granularity: str):
+    data = [
+        {"ts": r.get("Alert Time Stamp")}
+        for r in rows
+        if r.get("Alert Time Stamp") is not None
+    ]
+    if not data:
+        st.info("No data.")
+        return
+    df = pd.DataFrame(data)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(str(tz))
+    axis_title, time_format, tick_unit = apply_volume_granularity(df, granularity)
+    agg = df.groupby("bucket").size().reset_index(name="Alerts")
+    chart = (
+        alt.Chart(agg)
+        .mark_area(opacity=0.35, line=True, point=True)
+        .encode(
+            x=alt.X(
+                "bucket:T", 
+                title=axis_title, 
+                axis=alt.Axis(
+                    format=time_format, 
+                    labelAngle=-45, 
+                    labelBound=True, 
+                    labelOverlap="parity",
+                    tickCount=tick_unit
+                )
+            ),
+            y=alt.Y("Alerts:Q", title="Alert count"),
+            tooltip=[alt.Tooltip("bucket:T", title=axis_title, format=time_format), "Alerts:Q"],
+        )
+        .properties(height=340)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_volume_by_sla_chart(rows: list[dict], tz: ZoneInfo, granularity: str):
+    data = [
+        {
+            "ts": r.get("Alert Time Stamp"),
+            "SLA Compliance": r.get("SLA Compliance") or "No Action Taken",
+        }
+        for r in rows
+        if r.get("Alert Time Stamp") is not None
+    ]
+    if not data:
+        st.info("No data.")
+        return
+    df = pd.DataFrame(data)
+    df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(str(tz))
+    axis_title, time_format, tick_unit = apply_volume_granularity(df, granularity)
+    agg = (
+        df.groupby(["bucket", "SLA Compliance"]).size().reset_index(name="Alerts")
+    )
+    chart = (
+        alt.Chart(agg)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                "bucket:T", 
+                title=axis_title, 
+                axis=alt.Axis(
+                    format=time_format, 
+                    labelAngle=-45, 
+                    labelBound=True, 
+                    labelOverlap="parity",
+                    tickCount=tick_unit
+                )
+            ),
+            xOffset="SLA Compliance:N",
+            y=alt.Y("Alerts:Q", title="Alert count"),
+            color=alt.Color(
+                "SLA Compliance:N",
+                scale=SLA_COLOR_SCALE,
+                legend=alt.Legend(orient="bottom", title=None),
+            ),
+            tooltip=[
+                alt.Tooltip("bucket:T", title=axis_title, format=time_format),
+                "SLA Compliance:N",
+                "Alerts:Q",
+            ],
+        )
+        .properties(height=420, width=800)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
+    if not rows:
+        st.info("No alerts match the current filters.")
+        return
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        st.markdown("**SLA Compliance**")
+        render_pie(rows, "SLA Compliance", SLA_COLOR_SCALE)
+    with p2:
+        st.markdown("**Alerts by Fleet**")
+        render_pie(rows, "Tenant Name")
+    with p3:
+        st.markdown("**Action Type**")
+        render_pie(rows, "Action Type")
+    st.subheader("Alert Volume Over Time")
+    render_volume_chart(rows, tz, granularity)
+    st.subheader("Alert Volume by SLA Status")
+    render_volume_by_sla_chart(rows, tz, granularity)
+
+
+def render_table(rows: list[dict], key: str = "data"):
+    if not rows:
+        st.info("No alerts match the current filters.")
+        return
+    display_df = build_display_df(rows)
+    tz_short = tz_display_label(selected_tz, datetime.now(selected_tz))
+    rename_map = {}
+    if "Alert Time Stamp" in display_df.columns:
+        rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
+    if "Alert Created on Cloud" in display_df.columns:
+        rename_map["Alert Created on Cloud"] = f"Alert Created on Cloud ({tz_short})"
+    if "Action taken On" in display_df.columns:
+        rename_map["Action taken On"] = f"Action taken On ({tz_short})"
+    if rename_map:
+        display_df = display_df.rename(columns=rename_map)
+
+    search = st.text_input(
+        "Search", key=f"search_{key}", placeholder="Search all columns..."
+    )
+    if search:
+        mask = display_df.apply(
+            lambda r: r.astype(str).str.contains(search, case=False, na=False).any(),
+            axis=1,
+        )
+        display_df = display_df[mask]
+
+    def _sla_style(val):
+        if val == "Compliant":
+            return "color: #16a34a; font-weight: bold;"
+        if val == "Breached":
+            return "color: #a855f7; font-weight: bold;"
+        if val == "No Action Taken":
+            return "color: #dc2626; font-weight: bold;"
+        return ""
+
+    sla_col = "SLA Compliance"
+    table_data = display_df
+    if sla_col in display_df.columns:
+        table_data = display_df.style.map(_sla_style, subset=[sla_col])
+
+    st.dataframe(
+        table_data,
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+    )
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        display_df.to_excel(writer, index=False, sheet_name="Alerts")
+    range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
+    range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
+    range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
+    st.download_button(
+        label="Download as Excel (.xlsx)",
+        data=buffer.getvalue(),
+        file_name=f"dms_drowsy_report_{range_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_xlsx_{key}",
+    )
+    st.caption(f"{len(display_df)} alert(s) shown")
+
+
+# ── Sidebar: page navigation ──────────────────────────────────────────────────
+
+with st.sidebar:
+    st.markdown(
+        """
+        <div class="dms-nav-brand">
+            <div>
+                <div class="dms-nav-title">DMS Drowsy Report</div>
+                <div class="dms-nav-sub">Monitoring fleets: Amazon AFP (tenant 20220) · ABC Supply (tenant 7960)</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
+    page = st.radio(
+        "Page",
+        ["Home", "Data"],
+        key="nav_page",
+        label_visibility="collapsed",
+    )
+    st.divider()
+
+# ── Layout: content + left filters ───────────────────────────────────────────
+
+content_col = st.container()
+filters_container = st.sidebar
+
+# Time-window + timezone filters (needed before fetching data).
+with filters_container:
+    st.subheader("Filters")
+
     tz_values = list(TIMEZONE_OPTIONS.values())
     tz_label_to_value = {tz_dropdown_label(ZoneInfo(v)): v for v in tz_values}
     tz_labels = list(tz_label_to_value.keys())
     default_index = 1 if len(tz_labels) > 1 else 0
-    tz_label = st.selectbox("Display timezone", tz_labels, index=default_index)
+    tz_label = st.selectbox("Display timezone", tz_labels, index=default_index, key="tz_label")
     selected_tz = ZoneInfo(tz_label_to_value[tz_label])
-
-    st.markdown("**Filter alerts by time window**")
-    st.caption("Choose a quick date range or use Custom Date.")
 
     now_local = datetime.now(selected_tz)
     range_label = st.selectbox(
@@ -430,15 +775,21 @@ with st.sidebar:
         f"{local_end.strftime('%Y-%m-%d %H:%M')} {tz_display_label_for_range(selected_tz, local_start, local_end)}"
     )
 
-    if st.button("🔍 Apply time window", use_container_width=True):
-        if local_end < local_start:
-            st.error("End time must be after start time.")
-        elif range_label == "Custom Date" and (local_end - local_start).days > 31:
-            st.error("Custom Date range cannot exceed 31 days.")
-        else:
+    if range_label == "Custom Date":
+        # Custom range: wait for the user to confirm with Apply.
+        if st.button("Apply time window", use_container_width=True, key="apply_window"):
+            if local_end < local_start:
+                st.error("End time must be after start time.")
+            elif (local_end - local_start).days > 31:
+                st.error("Custom Date range cannot exceed 31 days.")
+            else:
+                set_time_window(local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc))
+                st.success("Time window applied.")
+                st.rerun()
+    else:
+        # Quick ranges apply immediately on selection (no Apply button).
+        if local_end >= local_start:
             set_time_window(local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc))
-            st.success("Time window applied.")
-            st.rerun()
 
     stored_start = get_stored_start_ts()
     stored_end = get_stored_end_ts()
@@ -453,145 +804,85 @@ with st.sidebar:
     else:
         st.warning("No time window set yet.")
 
+if stored_start is None or stored_end is None:
+    with content_col:
+        st.info("Set a start and end time in the left Filters panel to begin monitoring.")
+    st.stop()
+
+window_key = (stored_start.isoformat(), stored_end.isoformat())
+if st.session_state.get("alerts_window_key") != window_key:
+    try:
+        st.session_state["alerts_for_window"] = fetch_alerts(stored_start, stored_end)
+        st.session_state["alerts_window_key"] = window_key
+    except Exception as exc:
+        with content_col:
+            st.error(f"Database error: {exc}")
+        st.stop()
+
+alerts = st.session_state.get("alerts_for_window", [])
+
+# Data-driven filters (shared across Home and Data pages)
+with filters_container:
     st.divider()
 
-    # Live countdown to next refresh
-    if st.session_state["auto_refresh_enabled"]:
-        seconds_remaining = 30
-        last_load = datetime.now(selected_tz).strftime('%H:%M:%S')
-        components.html(f"""
-<p style="font-size:0.78rem; color:#888; margin:0; font-family:sans-serif; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.2;">
-    Next refresh in <strong><span id="dms-countdown">{seconds_remaining}s</span></strong>
-    &nbsp;·&nbsp; Last load: {last_load}&nbsp;
-</p>
-<script>
-    var remaining = {seconds_remaining};
-    var span = document.getElementById('dms-countdown');
-    setInterval(function() {{
-        remaining--;
-        if (remaining < 0) remaining = 0;
-        if (span) span.textContent = remaining + 's';
-    }}, 1000);
-</script>
-""", height=22)
+    fleet_options = sorted({a.get("Tenant Name") for a in alerts if a.get("Tenant Name")})
+    selected_fleets = st.multiselect(
+        "Fleet", fleet_options, default=fleet_options, key="fleet_filter"
+    )
+
+    sla_options = sorted({a.get("SLA Compliance") for a in alerts if a.get("SLA Compliance")})
+    selected_sla = st.multiselect(
+        "SLA Compliance", sla_options, default=sla_options, key="sla_filter"
+    )
+
+    type_options = sorted({a.get("Action Type") for a in alerts if a.get("Action Type")})
+    selected_types = st.multiselect(
+        "Action Type", type_options, default=type_options, key="type_filter"
+    )
+
+    # Volume granularity only affects the Home page charts.
+    if page == "Home":
+        granularity = st.selectbox(
+            "Volume granularity", ["Hourly", "Daily", "Weekly"], key="granularity"
+        )
     else:
-        st.caption("Auto refresh is paused.")
+        granularity = st.session_state.get("granularity", "Hourly")
 
-# ── Main content ──────────────────────────────────────────────────────────────
-
-st.markdown(
-        """
-        <div class="sticky-report-header">
-                        <h1 id="dms-drowsy-report">📄 DMS Drowsy Report</h1>
-            <p>Monitoring fleets: Amazon AFP (tenant 20220) · ABC Supply (tenant 7960)</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-)
-
-if stored_start is None or stored_end is None:
-    st.info("👈 Set a start and end time in the sidebar to begin monitoring.")
-    st.stop()
-
-# Fetch alerts
-try:
-    alerts = fetch_alerts(stored_start, stored_end)
-except Exception as exc:
-    st.error(f"❌ Database error: {exc}")
-    st.stop()
-
-# Summary metrics row
-amazon_alerts = [a for a in alerts if str(a.get("tenant_id", a.get("Tenant ID"))) == "20220"]
-abc_alerts    = [a for a in alerts if str(a.get("tenant_id", a.get("Tenant ID"))) == "7960"]
-
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Alerts", len(alerts))
-col2.metric("Amazon AFP",   len(amazon_alerts))
-col3.metric("ABC Supply",   len(abc_alerts))
-
-st.divider()
-
-if not alerts:
-    st.success("✅ No drowsy alerts found in the selected time window.")
-    st.stop()
-
-# Table controls
-_, refresh_col = st.columns([0.82, 0.18])
-with refresh_col:
+    st.divider()
     auto_refresh_value = st.toggle(
         "Auto refresh",
         value=st.session_state["auto_refresh_enabled"],
-        key="auto_refresh_toggle_tabs",
+        key="auto_refresh_toggle",
     )
     if auto_refresh_value != st.session_state["auto_refresh_enabled"]:
         st.session_state["auto_refresh_enabled"] = auto_refresh_value
         st.rerun()
 
-# Fleet tabs
-tab_all, tab_amazon, tab_abc = st.tabs(["📋 All Alerts", "🚛 Amazon AFP", "🏗️ ABC Supply"])
+# Apply the shared filters to the alert list
+filtered = []
+for a in alerts:
+    if a.get("Tenant Name") not in selected_fleets:
+        continue
+    if a.get("SLA Compliance") not in selected_sla:
+        continue
+    at = a.get("Action Type")
+    if at is not None and at not in selected_types:
+        continue
+    filtered.append(a)
 
+with content_col:
+    amazon_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "20220"]
+    abc_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "7960"]
 
-def render_table(rows, key: str = "table"):
-    if not rows:
-        st.info("No alerts for this fleet.")
-        return
-    display_df = build_display_df(rows)
-    tz_short = tz_display_label(selected_tz, datetime.now(selected_tz))
-    rename_map = {}
-    if "Alert Time Stamp" in display_df.columns:
-        rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
-    if "Alert Created On" in display_df.columns:
-        rename_map["Alert Created On"] = f"Alert Created On ({tz_short})"
-    if "Action taken On" in display_df.columns:
-        rename_map["Action taken On"] = f"Action taken On ({tz_short})"
-    if "Created On" in display_df.columns:
-        rename_map["Created On"] = f"Created On ({tz_short})"
-    if "time_stamp" in display_df.columns:
-        rename_map["time_stamp"] = f"time_stamp ({tz_short})"
-    if "created_on" in display_df.columns:
-        rename_map["created_on"] = f"created_on ({tz_short })"
-    if rename_map:
-        display_df = display_df.rename(columns=rename_map)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Alerts", len(filtered))
+    m2.metric("Amazon AFP", len(amazon_alerts))
+    m3.metric("ABC Supply", len(abc_alerts))
+    st.divider()
 
-    def _sla_style(val):
-        if val == "PASSED":
-            return "color: green; font-weight: bold;"
-        if val == "FAILED":
-            return "color: red; font-weight: bold;"
-        return ""
-
-    table_data = display_df
-    if "Action SLA Status" in display_df.columns:
-        table_data = display_df.style.map(_sla_style, subset=["Action SLA Status"])
-
-    st.dataframe(
-        table_data,
-        use_container_width=True,
-        hide_index=True,
-        height=500,
-    )
-
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        display_df.to_excel(writer, index=False, sheet_name="Alerts")
-    range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
-    range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
-    range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
-    st.download_button(
-        label="⬇️ Download as Excel (.xlsx)",
-        data=buffer.getvalue(),
-        file_name=f"dms_drowsy_report_{key}_{range_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_xlsx_{key}",
-    )
-    st.caption(f"{len(display_df)} alert(s) shown")
-
-
-with tab_all:
-    render_table(alerts, key="all")
-
-with tab_amazon:
-    render_table(amazon_alerts, key="amazon")
-
-with tab_abc:
-    render_table(abc_alerts, key="abc")
+    if not alerts:
+        st.success("No drowsy alerts found in the selected time window.")
+    elif page == "Home":
+        render_home(filtered, selected_tz, granularity)
+    else:
+        render_table(filtered, key="data")
