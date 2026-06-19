@@ -1,16 +1,22 @@
 import psycopg2
 import psycopg2.extras
 import decimal
-import csv
 import sys
 import os
-from pathlib import Path
 from datetime import datetime
 from config import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
     RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
     EVENT_CODES, TENANT_IDS,
 )
+
+VERBOSE = os.getenv("DMS_REPORT_VERBOSE", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _log(message: str):
+    if VERBOSE:
+        print(f"[DMS-Report] {message}", file=sys.stderr)
+
 
 # Allow service/runtime-specific Python path injection for OAC package.
 # Example:
@@ -19,72 +25,71 @@ _extra_oac_paths = os.getenv("OAC_PYTHON_PATHS", "")
 for _path in [p.strip() for p in _extra_oac_paths.replace(",", ":").split(":") if p.strip()]:
     if _path and _path not in sys.path:
         sys.path.insert(0, _path)
-        print(f"[DMS-Report] Added OAC path to sys.path: {_path}", file=sys.stderr)
+        _log(f"Added OAC path to sys.path: {_path}")
 
 try:
     from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
     _oac_source = "from OAC.DHML import get_opsDashboard_data"
-    print(f"[DMS-Report] OAC import successful via {_oac_source}", file=sys.stderr)
+    _log(f"OAC import successful via {_oac_source}")
 except Exception as import_error:
     _oac_source = "unavailable"
     get_opsDashboard_data = None
-    print(
-        f"[DMS-Report] OAC import failed. import_error={import_error}",
-        file=sys.stderr,
-    )
-    print(f"[DMS-Report] Python executable: {sys.executable}", file=sys.stderr)
-    print(f"[DMS-Report] Working directory: {os.getcwd()}", file=sys.stderr)
-    print(f"[DMS-Report] OAC_PYTHON_PATHS={os.getenv('OAC_PYTHON_PATHS', '')}", file=sys.stderr)
-    print(f"[DMS-Report] sys.path sample: {sys.path[:8]}", file=sys.stderr)
+    _log(f"OAC import failed. import_error={import_error}")
+    _log(f"Python executable: {sys.executable}")
+    _log(f"Working directory: {os.getcwd()}")
+    _log(f"OAC_PYTHON_PATHS={os.getenv('OAC_PYTHON_PATHS', '')}")
+    _log(f"sys.path sample: {sys.path[:8]}")
 
 
-_USER_NAME_MAP: dict[str, str] | None = None
+_OAC_USER_NAME_MAP: dict[str, str] = {}
 
 
-def _load_user_name_map() -> dict[str, str]:
-    """Load user_id -> user_name mapping from user_id.csv."""
-    global _USER_NAME_MAP
-    if _USER_NAME_MAP is not None:
-        return _USER_NAME_MAP
+def _first_nonempty(row: dict, names: tuple[str, ...]) -> str:
+    for name in names:
+        value = row.get(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
 
-    csv_path = Path(__file__).with_name("user_id.csv")
-    mapping: dict[str, str] = {}
-    if csv_path.exists():
-        with csv_path.open("r", newline="", encoding="utf-8-sig") as fh:
-            header = fh.readline()
-            delimiter = "\t" if "\t" in header and "," not in header else ","
-            fh.seek(0)
-            reader = csv.DictReader(fh, delimiter=delimiter)
-            for row in reader:
-                raw_id = (row.get("user_id") or "").strip()
-                raw_name = (row.get("user_name") or "").strip()
-                if raw_id and raw_name:
-                    mapping[raw_id] = raw_name
 
-    _USER_NAME_MAP = mapping
-    return mapping
+def _ops_dashboard_name(row: dict) -> str:
+    first_name = _first_nonempty(row, ("first_name", "firstname", "firstName", "First Name", "first"))
+    last_name = _first_nonempty(row, ("last_name", "lastname", "lastName", "Last Name", "last"))
+    if first_name and last_name:
+        return f"{first_name} {last_name}"
+
+    full_name = _first_nonempty(row, ("full_name", "fullName", "Full Name", "User Name", "user_name", "userName", "name"))
+    normalized = " ".join(full_name.split())
+    if len(normalized.split()) >= 2:
+        return normalized
+    return ""
+
+
+def _ops_dashboard_user_id(row: dict) -> str:
+    return _first_nonempty(row, ("user_id", "userId", "userid", "User ID", "id"))
 
 
 def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, str]:
     """
-    Try to fetch user_id -> user_name mapping from OpsDashboard.
+    Try to fetch user_id -> first-name/last-name mapping from OpsDashboard.
 
     Returns an empty mapping if the dependency is unavailable or lookup fails.
     """
-    ids = [str(u).strip() for u in user_ids if str(u).strip()]
+    ids = list(dict.fromkeys(str(u).strip() for u in user_ids if str(u).strip()))
     if not ids or get_opsDashboard_data is None:
-        print(
-            f"[DMS-Report] OAC skipped: ids_count={len(ids)}, has_oac={get_opsDashboard_data is not None}, source={_oac_source}",
-            file=sys.stderr,
-        )
+        _log(f"OAC skipped: ids_count={len(ids)}, has_oac={get_opsDashboard_data is not None}, source={_oac_source}")
         return {}
 
+    missing_ids = [uid for uid in ids if uid not in _OAC_USER_NAME_MAP]
+    if not missing_ids:
+        return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids}
+
     try:
-        print(f"[DMS-Report] OAC: fetching for {len(ids)} user_ids: {ids}", file=sys.stderr)
+        _log(f"OAC: fetching for {len(missing_ids)} user_ids")
         dashboard_input = {
             "device_list": None,
             "vin_list": None,
-            "user_id_list": ids,
+            "user_id_list": missing_ids,
         }
         ops_dashboard_cls = getattr(get_opsDashboard_data, "OpsDashboard", None)
         if ops_dashboard_cls is None:
@@ -92,50 +97,62 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
 
         odb_object = ops_dashboard_cls(dashboard_input)
         user_info = odb_object.get_user_info_from_user_id()
-        print(f"[DMS-Report] OAC returned type: {type(user_info)}, data: {user_info}", file=sys.stderr)
+        _log(f"OAC returned type: {type(user_info)}")
     except Exception as e:
-        print(f"[DMS-Report] OAC fetch error: {e}", file=sys.stderr)
+        _log(f"OAC fetch error: {e}")
         return {}
 
     mapping: dict[str, str] = {}
 
     # Common return shape is a DataFrame with user_id/user_name columns.
     if isinstance(user_info, list):
-        print(f"[DMS-Report] OAC: processing list with {len(user_info)} items", file=sys.stderr)
+        _log(f"OAC: processing list with {len(user_info)} items")
         for row in user_info:
             if not isinstance(row, dict):
                 continue
-            uid = str(row.get("user_id") or "").strip()
-            uname = str(row.get("user_name") or "").strip()
+            uid = _ops_dashboard_user_id(row)
+            uname = _ops_dashboard_name(row)
             if uid and uname:
                 mapping[uid] = uname
-        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from list", file=sys.stderr)
-        return mapping
+        _log(f"OAC: extracted {len(mapping)} mappings from list")
+        _OAC_USER_NAME_MAP.update(mapping)
+        return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids if uid in _OAC_USER_NAME_MAP}
 
     if isinstance(user_info, dict):
-        print(f"[DMS-Report] OAC: processing dict with {len(user_info)} items", file=sys.stderr)
-        for uid, uname in user_info.items():
-            uid_s = str(uid).strip()
-            uname_s = str(uname).strip()
-            if uid_s and uname_s:
-                mapping[uid_s] = uname_s
-        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from dict", file=sys.stderr)
-        return mapping
-
-    if hasattr(user_info, "columns") and hasattr(user_info, "iterrows"):
-        print(f"[DMS-Report] OAC: processing DataFrame with columns: {user_info.columns.tolist()}", file=sys.stderr)
-        if "user_id" not in user_info.columns or "user_name" not in user_info.columns:
-            print(f"[DMS-Report] OAC: missing required columns", file=sys.stderr)
-            return {}
-        for _, row in user_info[["user_id", "user_name"]].dropna().iterrows():
-            uid = str(row["user_id"]).strip()
-            uname = str(row["user_name"]).strip()
+        _log(f"OAC: processing dict with {len(user_info)} items")
+        if _ops_dashboard_user_id(user_info):
+            uid = _ops_dashboard_user_id(user_info)
+            uname = _ops_dashboard_name(user_info)
             if uid and uname:
                 mapping[uid] = uname
-        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from DataFrame", file=sys.stderr)
-        return mapping
+        for uid, value in user_info.items():
+            uid_s = str(uid).strip()
+            if isinstance(value, dict):
+                uname_s = _ops_dashboard_name(value)
+            else:
+                uname_s = str(value).strip()
+            if uid_s and uname_s:
+                mapping[uid_s] = uname_s
+        _log(f"OAC: extracted {len(mapping)} mappings from dict")
+        _OAC_USER_NAME_MAP.update(mapping)
+        return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids if uid in _OAC_USER_NAME_MAP}
 
-    print(f"[DMS-Report] OAC: unrecognized return type {type(user_info)}", file=sys.stderr)
+    if hasattr(user_info, "columns") and hasattr(user_info, "iterrows"):
+        _log(f"OAC: processing DataFrame with columns: {user_info.columns.tolist()}")
+        for _, row in user_info.dropna(how="all").iterrows():
+            row_dict = row.to_dict()
+            uid = _ops_dashboard_user_id(row_dict)
+            uname = _ops_dashboard_name(row_dict)
+            if uid and uname:
+                mapping[uid] = uname
+        if not mapping:
+            _log("OAC: missing usable user ID/name columns")
+            return {}
+        _log(f"OAC: extracted {len(mapping)} mappings from DataFrame")
+        _OAC_USER_NAME_MAP.update(mapping)
+        return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids if uid in _OAC_USER_NAME_MAP}
+
+    _log(f"OAC: unrecognized return type {type(user_info)}")
     return {}
 
 
@@ -239,21 +256,14 @@ def fetch_action_logs(alert_ids: list) -> dict:
             cur.execute(sql, (ids,))
             rows = cur.fetchall()
 
-            user_ids_in_rows = []
-            for _, _, _, user_id, _ in rows:
-                if user_id is not None:
-                    user_ids_in_rows.append(str(user_id))
+            user_ids_in_rows = [
+                str(user_id)
+                for _, _, _, user_id, _ in rows
+                if user_id is not None
+            ]
 
-            # Primary source: OpsDashboard, fallback source: local CSV.
             user_name_map = _fetch_user_name_map_from_ops_dashboard(user_ids_in_rows)
-            csv_user_name_map = _load_user_name_map()
-            for uid, uname in csv_user_name_map.items():
-                if uid not in user_name_map:
-                    user_name_map[uid] = uname
-            
-            oac_count = len(user_name_map) - len(csv_user_name_map)
-            csv_count = len([m for m in user_name_map.items() if m[0] in csv_user_name_map])
-            print(f"[DMS-Report] Mapping summary: OAC={oac_count}, CSV={csv_count}, Total={len(user_name_map)}", file=sys.stderr)
+            _log(f"Mapping summary: OpsDashboard={len(user_name_map)}")
 
             out = {}
             for alert_id, action_type_label, comment, user_id, first_action_on in rows:

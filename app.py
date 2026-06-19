@@ -507,6 +507,11 @@ def get_stored_end_ts() -> datetime | None:
 
 
 def set_time_window(start_utc: datetime, end_utc: datetime):
+    current_start = get_stored_start_ts()
+    current_end = get_stored_end_ts()
+    if current_start == start_utc and current_end == end_utc:
+        return
+
     conn = _db()
     conn.executemany(
         "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
@@ -754,16 +759,21 @@ def _prepare_export_df(rows: list[dict]) -> pd.DataFrame:
     return display_df
 
 
-def _render_download_button(display_df: pd.DataFrame, key: str):
+@st.cache_data(show_spinner=False)
+def _to_excel_bytes(display_df: pd.DataFrame) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         display_df.to_excel(writer, index=False, sheet_name="Alerts")
+    return buffer.getvalue()
+
+
+def _render_download_button(display_df: pd.DataFrame, key: str):
     range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
     range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
     range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
     st.download_button(
         label="Download as Excel",
-        data=buffer.getvalue(),
+        data=_to_excel_bytes(display_df),
         file_name=f"dms_drowsy_report_{range_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key=f"download_xlsx_{key}",
@@ -845,7 +855,7 @@ with filters_container:
     tz_label = st.selectbox("Display timezone", tz_labels, index=default_index, key="tz_label")
     selected_tz = ZoneInfo(tz_label_to_value[tz_label])
 
-    now_local = datetime.now(selected_tz)
+    now_local = datetime.now(selected_tz).replace(second=0, microsecond=0)
     range_label = st.selectbox(
         "Date range",
         [
@@ -989,7 +999,7 @@ if stored_start is None or stored_end is None:
         st.info("Set a start and end time in the left Filters panel to begin monitoring.")
     st.stop()
 
-window_key_str = f"v2_user_name_{stored_start.isoformat()}_{stored_end.isoformat()}"
+window_key_str = f"v4_opsdashboard_full_name_{stored_start.isoformat()}_{stored_end.isoformat()}"
 if st.session_state.get("alerts_window_key") != window_key_str:
     # 1. Check local persistent cache
     cached = get_cached_alerts(window_key_str)
