@@ -7,6 +7,7 @@ import time as _time
 from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 
+
 import pandas as pd
 import altair as alt
 import streamlit as st
@@ -402,6 +403,26 @@ section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
     border-radius: 12px;
     padding: 0.35rem 0.55rem;
 }
+
+/* Keep the report header download button pinned to the far right. */
+.st-key-report_header_row_data .st-key-download_xlsx_data_header {
+    align-self: flex-end;
+    margin-left: auto;
+    width: fit-content;
+}
+
+.st-key-report_header_row_data .st-key-download_xlsx_data_header .stDownloadButton {
+    width: fit-content;
+    margin-left: auto;
+}
+
+.st-key-report_header_row_data [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"] {
+    align-items: flex-end;
+}
+
+.st-key-report_header_row_data .st-key-download_xlsx_data_header .stDownloadButton > button {
+    width: auto;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -718,10 +739,7 @@ def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
     render_volume_by_sla_chart(rows, tz, granularity)
 
 
-def render_table(rows: list[dict], key: str = "data"):
-    if not rows:
-        st.info("No alerts match the current filters.")
-        return
+def _prepare_export_df(rows: list[dict]) -> pd.DataFrame:
     display_df = build_display_df(rows)
     tz_short = tz_display_label(selected_tz, datetime.now(selected_tz))
     rename_map = {}
@@ -733,6 +751,31 @@ def render_table(rows: list[dict], key: str = "data"):
         rename_map["Initial Action taken On"] = f"Initial Action taken On ({tz_short})"
     if rename_map:
         display_df = display_df.rename(columns=rename_map)
+    return display_df
+
+
+def _render_download_button(display_df: pd.DataFrame, key: str):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        display_df.to_excel(writer, index=False, sheet_name="Alerts")
+    range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
+    range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
+    range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
+    st.download_button(
+        label="Download as Excel",
+        data=buffer.getvalue(),
+        file_name=f"dms_drowsy_report_{range_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key=f"download_xlsx_{key}",
+    )
+
+
+def render_table(rows: list[dict], key: str = "data"):
+    if not rows:
+        st.info("No alerts match the current filters.")
+        return
+
+    display_df = _prepare_export_df(rows)
 
     search = st.text_input(
         "Search", key=f"search_{key}", placeholder="Search all columns..."
@@ -758,25 +801,19 @@ def render_table(rows: list[dict], key: str = "data"):
     if sla_col in display_df.columns:
         table_data = display_df.style.map(_sla_style, subset=[sla_col])
 
+    header_row = st.container(key=f"report_header_row_{key}")
+    with header_row:
+        h_left, h_right = st.columns([1, 1], vertical_alignment="center")
+        with h_left:
+            st.subheader("Alert Details")
+        with h_right:
+            _render_download_button(display_df, key=f"{key}_header")
+
     st.dataframe(
         table_data,
         use_container_width=True,
         hide_index=True,
         height=500,
-    )
-
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        display_df.to_excel(writer, index=False, sheet_name="Alerts")
-    range_start = stored_start.astimezone(selected_tz).strftime("%Y%m%d")
-    range_end = stored_end.astimezone(selected_tz).strftime("%Y%m%d")
-    range_str = range_start if range_start == range_end else f"{range_start}-{range_end}"
-    st.download_button(
-        label="Download as Excel (.xlsx)",
-        data=buffer.getvalue(),
-        file_name=f"dms_drowsy_report_{range_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key=f"download_xlsx_{key}",
     )
     st.caption(f"{len(display_df)} alert(s) shown")
 
@@ -1046,7 +1083,6 @@ with content_col:
         if not alerts:
             st.success("No drowsy alerts found in the selected time window.")
         else:
-            st.subheader("Alert Details")
             render_table(filtered, key="data")
 
     with graphical_tab:
@@ -1054,3 +1090,5 @@ with content_col:
             st.success("No drowsy alerts found in the selected time window.")
         else:
             render_home(filtered, selected_tz, granularity)
+            st.divider()
+            _render_download_button(_prepare_export_df(filtered), key="graphical")

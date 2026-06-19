@@ -2,6 +2,7 @@ import psycopg2
 import psycopg2.extras
 import decimal
 import csv
+import importlib
 from pathlib import Path
 from datetime import datetime
 from config import (
@@ -36,6 +37,69 @@ def _load_user_name_map() -> dict[str, str]:
 
     _USER_NAME_MAP = mapping
     return mapping
+
+
+def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, str]:
+    """
+    Try to fetch user_id -> user_name mapping from OpsDashboard.
+
+    Returns an empty mapping if the dependency is unavailable or lookup fails.
+    """
+    ids = [str(u).strip() for u in user_ids if str(u).strip()]
+    if not ids:
+        return {}
+
+    try:
+        dhml_module = importlib.import_module("OAC.DHML")
+        get_ops_dashboard_data = getattr(dhml_module, "get_opsDashboard_data", None)
+        if get_ops_dashboard_data is None:
+            return {}
+    except Exception:
+        return {}
+
+    try:
+        dashboard_input = {
+            "device_list": None,
+            "vin_list": None,
+            "user_id_list": ids,
+        }
+        odb_object = get_ops_dashboard_data.OpsDashboard(dashboard_input)
+        user_info = odb_object.get_user_info_from_user_id()
+    except Exception:
+        return {}
+
+    mapping: dict[str, str] = {}
+
+    # Common return shape is a DataFrame with user_id/user_name columns.
+    if isinstance(user_info, list):
+        for row in user_info:
+            if not isinstance(row, dict):
+                continue
+            uid = str(row.get("user_id") or "").strip()
+            uname = str(row.get("user_name") or "").strip()
+            if uid and uname:
+                mapping[uid] = uname
+        return mapping
+
+    if isinstance(user_info, dict):
+        for uid, uname in user_info.items():
+            uid_s = str(uid).strip()
+            uname_s = str(uname).strip()
+            if uid_s and uname_s:
+                mapping[uid_s] = uname_s
+        return mapping
+
+    if hasattr(user_info, "columns") and hasattr(user_info, "iterrows"):
+        if "user_id" not in user_info.columns or "user_name" not in user_info.columns:
+            return {}
+        for _, row in user_info[["user_id", "user_name"]].dropna().iterrows():
+            uid = str(row["user_id"]).strip()
+            uname = str(row["user_name"]).strip()
+            if uid and uname:
+                mapping[uid] = uname
+        return mapping
+
+    return {}
 
 
 def _clean(row: dict) -> dict:
@@ -136,9 +200,22 @@ def fetch_action_logs(alert_ids: list) -> dict:
     try:
         with conn.cursor() as cur:
             cur.execute(sql, (ids,))
-            user_name_map = _load_user_name_map()
+            rows = cur.fetchall()
+
+            user_ids_in_rows = []
+            for _, _, _, user_id, _ in rows:
+                if user_id is not None:
+                    user_ids_in_rows.append(str(user_id))
+
+            # Primary source: OpsDashboard, fallback source: local CSV.
+            user_name_map = _fetch_user_name_map_from_ops_dashboard(user_ids_in_rows)
+            csv_user_name_map = _load_user_name_map()
+            for uid, uname in csv_user_name_map.items():
+                if uid not in user_name_map:
+                    user_name_map[uid] = uname
+
             out = {}
-            for alert_id, action_type_label, comment, user_id, first_action_on in cur.fetchall():
+            for alert_id, action_type_label, comment, user_id, first_action_on in rows:
                 user_id_str = str(user_id) if user_id is not None else ""
                 user_name = user_name_map.get(user_id_str)
                 out[str(alert_id)] = {

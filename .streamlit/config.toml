@@ -1,5 +1,5 @@
 [server]
-baseUrlPath = "DMS-Drowsy-Report"
+baseUrlPath = "DMS-Drowsy-Report-Dashboard"
 headless = true
 
 [browser]
