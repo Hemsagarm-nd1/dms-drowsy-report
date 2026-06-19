@@ -12,11 +12,22 @@ from config import (
 )
 
 try:
-    from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
-    print("[DMS-Report] OAC.DHML import successful", file=sys.stderr)
-except Exception as e:
-    get_opsDashboard_data = None
-    print(f"[DMS-Report] OAC.DHML import failed: {e}", file=sys.stderr)
+    from OAC import DHML as _oac_dhml  # pyright: ignore[reportMissingImports]
+    get_opsDashboard_data = getattr(_oac_dhml, "get_opsDashboard_data", None) or _oac_dhml
+    _oac_source = "from OAC import DHML"
+    print(f"[DMS-Report] OAC import successful via {_oac_source}", file=sys.stderr)
+except Exception as root_import_error:
+    try:
+        from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
+        _oac_source = "from OAC.DHML import get_opsDashboard_data"
+        print(f"[DMS-Report] OAC import successful via {_oac_source}", file=sys.stderr)
+    except Exception as direct_import_error:
+        _oac_source = "unavailable"
+        get_opsDashboard_data = None
+        print(
+            f"[DMS-Report] OAC import failed. root_error={root_import_error}; direct_error={direct_import_error}",
+            file=sys.stderr,
+        )
 
 
 _USER_NAME_MAP: dict[str, str] | None = None
@@ -54,7 +65,10 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
     """
     ids = [str(u).strip() for u in user_ids if str(u).strip()]
     if not ids or get_opsDashboard_data is None:
-        print(f"[DMS-Report] OAC skipped: ids_count={len(ids)}, has_oac={get_opsDashboard_data is not None}", file=sys.stderr)
+        print(
+            f"[DMS-Report] OAC skipped: ids_count={len(ids)}, has_oac={get_opsDashboard_data is not None}, source={_oac_source}",
+            file=sys.stderr,
+        )
         return {}
 
     try:
@@ -64,7 +78,11 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
             "vin_list": None,
             "user_id_list": ids,
         }
-        odb_object = get_opsDashboard_data.OpsDashboard(dashboard_input)
+        ops_dashboard_cls = getattr(get_opsDashboard_data, "OpsDashboard", None)
+        if ops_dashboard_cls is None:
+            raise AttributeError(f"OpsDashboard not found in object from source={_oac_source}")
+
+        odb_object = ops_dashboard_cls(dashboard_input)
         user_info = odb_object.get_user_info_from_user_id()
         print(f"[DMS-Report] OAC returned type: {type(user_info)}, data: {user_info}", file=sys.stderr)
     except Exception as e:
