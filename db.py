@@ -2,6 +2,7 @@ import psycopg2
 import psycopg2.extras
 import decimal
 import csv
+import sys
 from pathlib import Path
 from datetime import datetime
 from config import (
@@ -12,8 +13,10 @@ from config import (
 
 try:
     from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
-except Exception:
+    print("[DMS-Report] OAC.DHML import successful", file=sys.stderr)
+except Exception as e:
     get_opsDashboard_data = None
+    print(f"[DMS-Report] OAC.DHML import failed: {e}", file=sys.stderr)
 
 
 _USER_NAME_MAP: dict[str, str] | None = None
@@ -51,9 +54,11 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
     """
     ids = [str(u).strip() for u in user_ids if str(u).strip()]
     if not ids or get_opsDashboard_data is None:
+        print(f"[DMS-Report] OAC skipped: ids_count={len(ids)}, has_oac={get_opsDashboard_data is not None}", file=sys.stderr)
         return {}
 
     try:
+        print(f"[DMS-Report] OAC: fetching for {len(ids)} user_ids: {ids}", file=sys.stderr)
         dashboard_input = {
             "device_list": None,
             "vin_list": None,
@@ -61,13 +66,16 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
         }
         odb_object = get_opsDashboard_data.OpsDashboard(dashboard_input)
         user_info = odb_object.get_user_info_from_user_id()
-    except Exception:
+        print(f"[DMS-Report] OAC returned type: {type(user_info)}, data: {user_info}", file=sys.stderr)
+    except Exception as e:
+        print(f"[DMS-Report] OAC fetch error: {e}", file=sys.stderr)
         return {}
 
     mapping: dict[str, str] = {}
 
     # Common return shape is a DataFrame with user_id/user_name columns.
     if isinstance(user_info, list):
+        print(f"[DMS-Report] OAC: processing list with {len(user_info)} items", file=sys.stderr)
         for row in user_info:
             if not isinstance(row, dict):
                 continue
@@ -75,26 +83,33 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
             uname = str(row.get("user_name") or "").strip()
             if uid and uname:
                 mapping[uid] = uname
+        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from list", file=sys.stderr)
         return mapping
 
     if isinstance(user_info, dict):
+        print(f"[DMS-Report] OAC: processing dict with {len(user_info)} items", file=sys.stderr)
         for uid, uname in user_info.items():
             uid_s = str(uid).strip()
             uname_s = str(uname).strip()
             if uid_s and uname_s:
                 mapping[uid_s] = uname_s
+        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from dict", file=sys.stderr)
         return mapping
 
     if hasattr(user_info, "columns") and hasattr(user_info, "iterrows"):
+        print(f"[DMS-Report] OAC: processing DataFrame with columns: {user_info.columns.tolist()}", file=sys.stderr)
         if "user_id" not in user_info.columns or "user_name" not in user_info.columns:
+            print(f"[DMS-Report] OAC: missing required columns", file=sys.stderr)
             return {}
         for _, row in user_info[["user_id", "user_name"]].dropna().iterrows():
             uid = str(row["user_id"]).strip()
             uname = str(row["user_name"]).strip()
             if uid and uname:
                 mapping[uid] = uname
+        print(f"[DMS-Report] OAC: extracted {len(mapping)} mappings from DataFrame", file=sys.stderr)
         return mapping
 
+    print(f"[DMS-Report] OAC: unrecognized return type {type(user_info)}", file=sys.stderr)
     return {}
 
 
@@ -209,6 +224,10 @@ def fetch_action_logs(alert_ids: list) -> dict:
             for uid, uname in csv_user_name_map.items():
                 if uid not in user_name_map:
                     user_name_map[uid] = uname
+            
+            oac_count = len(user_name_map) - len(csv_user_name_map)
+            csv_count = len([m for m in user_name_map.items() if m[0] in csv_user_name_map])
+            print(f"[DMS-Report] Mapping summary: OAC={oac_count}, CSV={csv_count}, Total={len(user_name_map)}", file=sys.stderr)
 
             out = {}
             for alert_id, action_type_label, comment, user_id, first_action_on in rows:
