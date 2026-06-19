@@ -22,26 +22,20 @@ for _path in [p.strip() for p in _extra_oac_paths.replace(",", ":").split(":") i
         print(f"[DMS-Report] Added OAC path to sys.path: {_path}", file=sys.stderr)
 
 try:
-    from OAC import DHML as _oac_dhml  # pyright: ignore[reportMissingImports]
-    get_opsDashboard_data = getattr(_oac_dhml, "get_opsDashboard_data", None) or _oac_dhml
-    _oac_source = "from OAC import DHML"
+    from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
+    _oac_source = "from OAC.DHML import get_opsDashboard_data"
     print(f"[DMS-Report] OAC import successful via {_oac_source}", file=sys.stderr)
-except Exception as root_import_error:
-    try:
-        from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
-        _oac_source = "from OAC.DHML import get_opsDashboard_data"
-        print(f"[DMS-Report] OAC import successful via {_oac_source}", file=sys.stderr)
-    except Exception as direct_import_error:
-        _oac_source = "unavailable"
-        get_opsDashboard_data = None
-        print(
-            f"[DMS-Report] OAC import failed. root_error={root_import_error}; direct_error={direct_import_error}",
-            file=sys.stderr,
-        )
-        print(f"[DMS-Report] Python executable: {sys.executable}", file=sys.stderr)
-        print(f"[DMS-Report] Working directory: {os.getcwd()}", file=sys.stderr)
-        print(f"[DMS-Report] OAC_PYTHON_PATHS={os.getenv('OAC_PYTHON_PATHS', '')}", file=sys.stderr)
-        print(f"[DMS-Report] sys.path sample: {sys.path[:8]}", file=sys.stderr)
+except Exception as import_error:
+    _oac_source = "unavailable"
+    get_opsDashboard_data = None
+    print(
+        f"[DMS-Report] OAC import failed. import_error={import_error}",
+        file=sys.stderr,
+    )
+    print(f"[DMS-Report] Python executable: {sys.executable}", file=sys.stderr)
+    print(f"[DMS-Report] Working directory: {os.getcwd()}", file=sys.stderr)
+    print(f"[DMS-Report] OAC_PYTHON_PATHS={os.getenv('OAC_PYTHON_PATHS', '')}", file=sys.stderr)
+    print(f"[DMS-Report] sys.path sample: {sys.path[:8]}", file=sys.stderr)
 
 
 _USER_NAME_MAP: dict[str, str] | None = None
