@@ -3,6 +3,7 @@ import psycopg2.extras
 import decimal
 import csv
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
 from config import (
@@ -10,6 +11,15 @@ from config import (
     RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
     EVENT_CODES, TENANT_IDS,
 )
+
+# Allow service/runtime-specific Python path injection for OAC package.
+# Example:
+#   export OAC_PYTHON_PATHS="/opt/ammeg/lib:/opt/pyOps/lib"
+_extra_oac_paths = os.getenv("OAC_PYTHON_PATHS", "")
+for _path in [p.strip() for p in _extra_oac_paths.replace(",", ":").split(":") if p.strip()]:
+    if _path and _path not in sys.path:
+        sys.path.insert(0, _path)
+        print(f"[DMS-Report] Added OAC path to sys.path: {_path}", file=sys.stderr)
 
 try:
     from OAC import DHML as _oac_dhml  # pyright: ignore[reportMissingImports]
@@ -28,6 +38,10 @@ except Exception as root_import_error:
             f"[DMS-Report] OAC import failed. root_error={root_import_error}; direct_error={direct_import_error}",
             file=sys.stderr,
         )
+        print(f"[DMS-Report] Python executable: {sys.executable}", file=sys.stderr)
+        print(f"[DMS-Report] Working directory: {os.getcwd()}", file=sys.stderr)
+        print(f"[DMS-Report] OAC_PYTHON_PATHS={os.getenv('OAC_PYTHON_PATHS', '')}", file=sys.stderr)
+        print(f"[DMS-Report] sys.path sample: {sys.path[:8]}", file=sys.stderr)
 
 
 _USER_NAME_MAP: dict[str, str] | None = None
