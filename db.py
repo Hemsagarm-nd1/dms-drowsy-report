@@ -2,7 +2,6 @@ import psycopg2
 import psycopg2.extras
 import decimal
 import csv
-import importlib
 from pathlib import Path
 from datetime import datetime
 from config import (
@@ -10,6 +9,11 @@ from config import (
     RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
     EVENT_CODES, TENANT_IDS,
 )
+
+try:
+    from OAC.DHML import get_opsDashboard_data  # pyright: ignore[reportMissingImports]
+except Exception:
+    get_opsDashboard_data = None
 
 
 _USER_NAME_MAP: dict[str, str] | None = None
@@ -46,15 +50,7 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
     Returns an empty mapping if the dependency is unavailable or lookup fails.
     """
     ids = [str(u).strip() for u in user_ids if str(u).strip()]
-    if not ids:
-        return {}
-
-    try:
-        dhml_module = importlib.import_module("OAC.DHML")
-        get_ops_dashboard_data = getattr(dhml_module, "get_opsDashboard_data", None)
-        if get_ops_dashboard_data is None:
-            return {}
-    except Exception:
+    if not ids or get_opsDashboard_data is None:
         return {}
 
     try:
@@ -63,7 +59,7 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
             "vin_list": None,
             "user_id_list": ids,
         }
-        odb_object = get_ops_dashboard_data.OpsDashboard(dashboard_input)
+        odb_object = get_opsDashboard_data.OpsDashboard(dashboard_input)
         user_info = odb_object.get_user_info_from_user_id()
     except Exception:
         return {}
