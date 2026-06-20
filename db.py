@@ -57,10 +57,14 @@ def _ops_dashboard_name(row: dict) -> str:
     last_name = _first_nonempty(row, ("last_name", "lastname", "lastName", "Last Name", "last"))
     if first_name and last_name:
         return f"{first_name} {last_name}"
+    if first_name:
+        return first_name
+    if last_name:
+        return last_name
 
     full_name = _first_nonempty(row, ("full_name", "fullName", "Full Name", "User Name", "user_name", "userName", "name"))
     normalized = " ".join(full_name.split())
-    if len(normalized.split()) >= 2:
+    if normalized:
         return normalized
     return ""
 
@@ -83,6 +87,14 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
     missing_ids = [uid for uid in ids if uid not in _OAC_USER_NAME_MAP]
     if not missing_ids:
         return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids}
+
+    # Large reverse lookups (used by History username search) can fail if sent as
+    # one oversized request; fetch in chunks and merge into cache.
+    chunk_size = 200
+    if len(missing_ids) > chunk_size:
+        for i in range(0, len(missing_ids), chunk_size):
+            _fetch_user_name_map_from_ops_dashboard(missing_ids[i : i + chunk_size])
+        return {uid: _OAC_USER_NAME_MAP[uid] for uid in ids if uid in _OAC_USER_NAME_MAP}
 
     try:
         _log(f"OAC: fetching for {len(missing_ids)} user_ids")
