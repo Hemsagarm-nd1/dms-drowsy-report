@@ -851,6 +851,8 @@ def _history_search_href(field_key: str, value) -> str:
         if value is None or pd.isna(value):
             return None
         text = str(value).strip()
+        if not text or text.lower() in {"none", "nan"}:
+            return None
     if not text:
         return None
     return f"?view=History&history_{field_key}={quote(text)}&label={quote(text)}"
