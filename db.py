@@ -272,7 +272,7 @@ def fetch_action_logs(alert_ids: list) -> dict:
                 out[str(alert_id)] = {
                     "Action Type": action_type_label,
                     "Comment": comment,
-                    "User Name": user_name or None,
+                    "User Name": user_name or user_id_str or None,
                     "Initial Action taken On": first_action_on,
                 }
             return out

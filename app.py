@@ -999,7 +999,7 @@ if stored_start is None or stored_end is None:
         st.info("Set a start and end time in the left Filters panel to begin monitoring.")
     st.stop()
 
-window_key_str = f"v4_opsdashboard_full_name_{stored_start.isoformat()}_{stored_end.isoformat()}"
+window_key_str = f"v5_opsdashboard_name_or_user_id_{stored_start.isoformat()}_{stored_end.isoformat()}"
 if st.session_state.get("alerts_window_key") != window_key_str:
     # 1. Check local persistent cache
     cached = get_cached_alerts(window_key_str)
