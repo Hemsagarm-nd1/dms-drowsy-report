@@ -5,6 +5,7 @@ import json
 import sqlite3
 import time as _time
 from datetime import datetime, timedelta, timezone, time as dt_time
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 
@@ -18,7 +19,7 @@ from config import (
     SQLITE_DB_PATH,
     TIMEZONE_OPTIONS,
 )
-from db import fetch_alerts
+from db import fetch_alerts, fetch_history_logs
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -361,9 +362,13 @@ section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
     border: 1px solid var(--dms-border) !important;
     background: color-mix(in srgb, var(--dms-panel) 88%, transparent) !important;
     color: var(--dms-muted) !important;
-    font-weight: 600;
+    font-weight: 800 !important;
     padding: 0.5rem 0.8rem !important;
     transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+[data-baseweb="tab-list"] button[role="tab"] [data-testid="stMarkdownContainer"] p {
+    font-weight: 800 !important;
 }
 
 [data-baseweb="tab-list"] button[role="tab"]:hover {
@@ -402,6 +407,15 @@ section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
     border: 1px solid var(--dms-border);
     border-radius: 12px;
     padding: 0.35rem 0.55rem;
+}
+
+/* Keep history action buttons on opposite ends (Search left, Download right). */
+.st-key-history_actions [data-testid="stColumn"]:last-child [data-testid="stVerticalBlock"] {
+    align-items: flex-end;
+}
+
+.st-key-history_actions .st-key-download_xlsx_history .stDownloadButton {
+    width: fit-content;
 }
 
 /* Keep the report header download button pinned to the far right. */
@@ -567,6 +581,26 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
     records = []
     for r in rows:
         record = dict(r)
+
+        # Friendly duration for initial action (e.g. 2m 54s).
+        action_duration = None
+        alert_created_raw = record.get("Alert Created on Cloud")
+        initial_action_raw = record.get("Initial Action taken On")
+        if alert_created_raw is not None and initial_action_raw is not None:
+            alert_created_ts = pd.to_datetime(alert_created_raw, errors="coerce")
+            initial_action_ts = pd.to_datetime(initial_action_raw, errors="coerce")
+            if pd.notna(alert_created_ts) and pd.notna(initial_action_ts):
+                total_seconds = int((initial_action_ts - alert_created_ts).total_seconds())
+                if total_seconds >= 0:
+                    minutes, seconds = divmod(total_seconds, 60)
+                    action_duration = f"{minutes}m {seconds}s"
+        if action_duration is None and "Initial Action taken in Minutes" in record:
+            raw_minutes = pd.to_numeric(record.get("Initial Action taken in Minutes"), errors="coerce")
+            if pd.notna(raw_minutes):
+                action_duration = f"{int(raw_minutes)}m 0s"
+        if action_duration is not None:
+            record["Initial Action taken in"] = action_duration
+
         if "time_stamp" in record:
             record["time_stamp"] = fmt_ts(record.get("time_stamp"), selected_tz)
         if "Alert Time Stamp" in record:
@@ -575,16 +609,26 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
             record["Alert Created on Cloud"] = fmt_ts(record.get("Alert Created on Cloud"), selected_tz)
         if "Initial Action taken On" in record:
             record["Initial Action taken On"] = fmt_ts(record.get("Initial Action taken On"), selected_tz)
+        if "Action taken On" in record:
+            record["Action taken On"] = fmt_ts(record.get("Action taken On"), selected_tz)
         if "created_on" in record:
             record["created_on"] = fmt_ts(record.get("created_on"), selected_tz)
         if "Created On" in record:
             record["Created On"] = fmt_ts(record.get("Created On"), selected_tz)
+
+        # Keep only the human-friendly duration column in the table.
+        record.pop("Initial Action taken in Minutes", None)
         records.append(record)
     df = pd.DataFrame(records)
     if "Driver ID" in df.columns:
         df["Driver ID"] = pd.to_numeric(df["Driver ID"], errors="coerce").astype("Int64")
     if "Action taken in Minutes" in df.columns:
         df["Action taken in Minutes"] = pd.to_numeric(df["Action taken in Minutes"], errors="coerce").astype("Int64")
+    for col in df.columns:
+        if col == "Driver ID":
+            continue
+        if pd.api.types.is_object_dtype(df[col]):
+            df[col] = df[col].where(pd.notna(df[col]), "None")
     return df
 
 
@@ -738,9 +782,9 @@ def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
     with p3:
         st.markdown("**Action Type**")
         render_pie(rows, "Action Type", missing_label="Missed")
-    st.subheader("Alert Volume Over Time")
+    st.subheader(f"{granularity} Alert Trend")
     render_volume_chart(rows, tz, granularity)
-    st.subheader("Alert Volume by SLA Status")
+    st.subheader(f"{granularity} Alert Trend by SLA Status")
     render_volume_by_sla_chart(rows, tz, granularity)
 
 
@@ -780,6 +824,121 @@ def _render_download_button(display_df: pd.DataFrame, key: str):
     )
 
 
+def _get_query_param(name: str) -> str:
+    value = st.query_params.get(name, "")
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return str(value)
+
+
+def _normalize_id_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none"}:
+        return ""
+
+    num = pd.to_numeric(text, errors="coerce")
+    if pd.notna(num) and float(num).is_integer():
+        return str(int(num))
+    return text
+
+
+def _history_search_href(field_key: str, value) -> str:
+    if field_key in {"alert_id", "driver_id", "vehicle_id"}:
+        text = _normalize_id_text(value)
+    else:
+        if value is None or pd.isna(value):
+            return None
+        text = str(value).strip()
+    if not text:
+        return None
+    return f"?view=History&history_{field_key}={quote(text)}&label={quote(text)}"
+
+
+def _make_history_link_df(display_df: pd.DataFrame) -> pd.DataFrame:
+    link_df = display_df.copy()
+    field_map = {
+        "Alert ID": "alert_id",
+        "Driver ID": "driver_id",
+        "Vehicle ID": "vehicle_id",
+        "User Name": "user_name",
+    }
+    for column_name, field_key in field_map.items():
+        if column_name in link_df.columns:
+            link_df[column_name] = link_df[column_name].map(
+                lambda value: _history_search_href(field_key, value)
+            )
+    return link_df
+
+
+def _sync_history_state_from_query_params():
+    view = _get_query_param("view")
+    history_params = {
+        "history_alert_id": _normalize_id_text(_get_query_param("history_alert_id")),
+        "history_driver_id": _normalize_id_text(_get_query_param("history_driver_id")),
+        "history_vehicle_id": _normalize_id_text(_get_query_param("history_vehicle_id")),
+        "history_user_name": _get_query_param("history_user_name"),
+    }
+
+    if view == "History" or any(history_params.values()):
+        st.session_state["open_history_from_query"] = True
+
+    if not view and not any(history_params.values()):
+        return
+
+    for key, value in history_params.items():
+        st.session_state[key] = value
+
+    query_key = json.dumps(history_params, sort_keys=True)
+    if any(history_params.values()) and st.session_state.get("history_query_key") != query_key:
+        st.session_state["history_results"] = fetch_history_logs(
+            alert_ids=[history_params["history_alert_id"]],
+            driver_ids=[history_params["history_driver_id"]],
+            vehicle_ids=[history_params["history_vehicle_id"]],
+            user_names=[history_params["history_user_name"]],
+        )
+        st.session_state["history_searched"] = True
+        st.session_state["history_query_key"] = query_key
+
+    if view or any(history_params.values()):
+        st.query_params.clear()
+
+
+def _activate_history_tab_once():
+    if not st.session_state.get("open_history_from_query"):
+        return
+    components.html(
+        """
+        <script>
+                const clickHistoryTab = () => {
+                    const docs = [window.document, window.parent && window.parent.document].filter(Boolean);
+                    for (const doc of docs) {
+                        const tabs = doc.querySelectorAll('button[role="tab"]');
+                        for (const tab of tabs) {
+                            if (tab.textContent && tab.textContent.trim() === 'History') {
+                                tab.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                };
+
+                let attempts = 0;
+                const timer = setInterval(() => {
+                    attempts += 1;
+                    if (clickHistoryTab() || attempts > 20) {
+                        clearInterval(timer);
+                    }
+                }, 150);
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state["open_history_from_query"] = False
+
+
 def render_table(rows: list[dict], key: str = "data"):
     if not rows:
         st.info("No alerts match the current filters.")
@@ -797,25 +956,23 @@ def render_table(rows: list[dict], key: str = "data"):
         )
         display_df = display_df[mask]
 
-    def _sla_style(val):
-        if val == "Compliant":
-            return "color: #16a34a; font-weight: bold;"
-        if val == "Breached":
-            return "color: #a855f7; font-weight: bold;"
-        if val == "No Action Taken":
-            return "color: #dc2626; font-weight: bold;"
-        return ""
+    table_df = display_df.copy()
+    if "SLA Compliance" in table_df.columns:
+        table_df["SLA Compliance"] = table_df["SLA Compliance"].map(
+            lambda val: {
+                "Compliant": "🟢 Compliant",
+                "Breached": "🟣 Breached",
+                "No Action Taken": "🔴 No Action Taken",
+            }.get(str(val), str(val))
+        )
 
-    sla_col = "SLA Compliance"
-    table_data = display_df
-    if sla_col in display_df.columns:
-        table_data = display_df.style.map(_sla_style, subset=[sla_col])
+    table_data = _make_history_link_df(table_df)
 
     header_row = st.container(key=f"report_header_row_{key}")
     with header_row:
         h_left, h_right = st.columns([1, 1], vertical_alignment="center")
         with h_left:
-            st.subheader("Alert Details")
+            st.caption("Click Alert ID, Driver ID, Vehicle ID, or User Name to open History search.")
         with h_right:
             _render_download_button(display_df, key=f"{key}_header")
 
@@ -824,8 +981,29 @@ def render_table(rows: list[dict], key: str = "data"):
         use_container_width=True,
         hide_index=True,
         height=500,
+        column_config={
+            "Alert ID": st.column_config.LinkColumn("Alert ID", display_text=r".*[?&]label=([^&]+).*"),
+            "Driver ID": st.column_config.LinkColumn("Driver ID", display_text=r".*[?&]label=([^&]+).*"),
+            "Vehicle ID": st.column_config.LinkColumn("Vehicle ID", display_text=r".*[?&]label=([^&]+).*"),
+            "User Name": st.column_config.LinkColumn("User Name", display_text=r".*[?&]label=([^&]+).*"),
+        },
     )
     st.caption(f"{len(display_df)} alert(s) shown")
+
+
+def render_history_table(rows: list[dict]):
+    if not rows:
+        st.info("No history records found for the entered value.")
+        return
+
+    display_df = build_display_df(rows)
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+    )
+    st.caption(f"{len(display_df)} history record(s) shown")
 
 
 # ── Layout: content + left filters ───────────────────────────────────────────
@@ -1023,6 +1201,8 @@ if st.session_state.get("alerts_window_key") != window_key_str:
 
 alerts = st.session_state.get("alerts_for_window", [])
 
+_sync_history_state_from_query_params()
+
 # Data-driven filters (shared across Home and Data pages)
 with filters_container:
     st.divider()
@@ -1081,13 +1261,21 @@ with content_col:
     amazon_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "20220"]
     abc_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "7960"]
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Alerts", len(filtered))
-    m2.metric("Amazon AFP", len(amazon_alerts))
-    m3.metric("ABC Supply", len(abc_alerts))
+    show_amazon = "AFP 2024" in selected_fleets
+    show_abc = "ABC" in selected_fleets
+    metric_cols = st.columns(1 + int(show_amazon) + int(show_abc))
+    col_idx = 0
+    metric_cols[col_idx].metric("Total Alerts", len(filtered))
+    col_idx += 1
+    if show_amazon:
+        metric_cols[col_idx].metric("Amazon AFP", len(amazon_alerts))
+        col_idx += 1
+    if show_abc:
+        metric_cols[col_idx].metric("ABC Supply", len(abc_alerts))
 
 
-    reports_tab, graphical_tab = st.tabs(["Reports", "Graphical Representation"])
+    reports_tab, graphical_tab, history_tab = st.tabs(["Alert Details", "Graphical Representation", "History"])
+    _activate_history_tab_once()
 
     with reports_tab:
         if not alerts:
@@ -1102,3 +1290,66 @@ with content_col:
             render_home(filtered, selected_tz, granularity)
             st.divider()
             _render_download_button(_prepare_export_df(filtered), key="graphical")
+
+    with history_tab:
+        st.caption("Enter atleast one value to search.")
+
+        h1, h2, h3, h4 = st.columns(4)
+        with h1:
+            history_alert_id = st.text_input(
+                "Alert ID",
+                key="history_alert_id",
+                placeholder="5979351119",
+            )
+        with h2:
+            history_driver_id = st.text_input(
+                "Driver ID",
+                key="history_driver_id",
+                placeholder="2308221",
+            )
+        with h3:
+            history_vehicle_id = st.text_input(
+                "Vehicle ID",
+                key="history_vehicle_id",
+                placeholder="Vehicle ID",
+            )
+        with h4:
+            history_user_name = st.text_input(
+                "User Name",
+                key="history_user_name",
+                placeholder="John Doe",
+            )
+
+        actions_row = st.container(key="history_actions")
+        with actions_row:
+            a_left, a_right = st.columns([1, 1], vertical_alignment="center")
+            with a_left:
+                history_search = st.button("Search History", key="search_history")
+            with a_right:
+                history_results = st.session_state.get("history_results", [])
+                if st.session_state.get("history_searched") and history_results:
+                    history_display_df = build_display_df(history_results)
+                    st.download_button(
+                        label="Download as Excel",
+                        data=_to_excel_bytes(history_display_df),
+                        file_name=f"dms_history_{datetime.now(selected_tz).strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_xlsx_history",
+                    )
+
+        if history_search:
+            try:
+                st.session_state["history_results"] = fetch_history_logs(
+                    alert_ids=[history_alert_id],
+                    driver_ids=[history_driver_id],
+                    vehicle_ids=[history_vehicle_id],
+                    user_names=[history_user_name],
+                )
+                st.session_state["history_searched"] = True
+            except Exception as exc:
+                st.error(f"History query failed: {exc}")
+                st.session_state["history_results"] = []
+                st.session_state["history_searched"] = True
+
+        if st.session_state.get("history_searched"):
+            render_history_table(st.session_state.get("history_results", []))

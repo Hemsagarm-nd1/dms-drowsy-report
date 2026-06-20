@@ -156,6 +156,39 @@ def _fetch_user_name_map_from_ops_dashboard(user_ids: list[str]) -> dict[str, st
     return {}
 
 
+def _find_history_user_ids_by_name(search_values: list[str]) -> list[str]:
+    """Resolve history-search user IDs by matching search text against OAC user names."""
+    name_terms = [" ".join(str(value).split()).casefold() for value in search_values if any(ch.isalpha() for ch in str(value))]
+    if not name_terms:
+        return []
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT user_id
+                FROM ndlivemanagementlogs
+                WHERE user_id IS NOT NULL
+                ORDER BY user_id
+                """
+            )
+            all_user_ids = [str(row[0]).strip() for row in cur.fetchall() if row[0] is not None]
+    finally:
+        conn.close()
+
+    if not all_user_ids:
+        return []
+
+    user_name_map = _fetch_user_name_map_from_ops_dashboard(all_user_ids)
+    matched_user_ids = []
+    for user_id, user_name in user_name_map.items():
+        normalized_name = " ".join(str(user_name).split()).casefold()
+        if normalized_name and any(term in normalized_name for term in name_terms):
+            matched_user_ids.append(user_id)
+    return matched_user_ids
+
+
 def _clean(row: dict) -> dict:
     """Convert decimal.Decimal → int/float so SQLite and JSON serialisation work."""
     out = {}
@@ -280,6 +313,104 @@ def fetch_action_logs(alert_ids: list) -> dict:
         conn.close()
 
 
+def fetch_history_logs(
+    alert_ids: list[str] | None = None,
+    driver_ids: list[str] | None = None,
+    vehicle_ids: list[str] | None = None,
+    user_names: list[str] | None = None,
+) -> list[dict]:
+    """Fetch management log history matching alert, driver, vehicle, or user-name filters."""
+    def _normalize_numeric_text(value) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            num = float(text)
+            if num.is_integer():
+                return str(int(num))
+        except Exception:
+            pass
+        return text
+
+    alert_values = list(dict.fromkeys(_normalize_numeric_text(value) for value in (alert_ids or []) if str(value).strip()))
+    driver_values = list(dict.fromkeys(_normalize_numeric_text(value) for value in (driver_ids or []) if str(value).strip()))
+    vehicle_values = list(dict.fromkeys(_normalize_numeric_text(value) for value in (vehicle_ids or []) if str(value).strip()))
+    user_name_values = list(dict.fromkeys(str(value).strip() for value in (user_names or []) if str(value).strip()))
+
+    if not any((alert_values, driver_values, vehicle_values, user_name_values)):
+        return []
+
+    direct_user_ids = user_name_values
+    matched_user_ids = _find_history_user_ids_by_name(user_name_values)
+    user_filter_ids = list(dict.fromkeys([*direct_user_ids, *matched_user_ids]))
+    if user_name_values and not user_filter_ids:
+        return []
+
+    where_clauses = []
+    params = []
+    if alert_values:
+        where_clauses.append("alert_id::text = ANY(%s)")
+        params.append(alert_values)
+    if vehicle_values:
+        where_clauses.append("vehicle_id::text = ANY(%s)")
+        params.append(vehicle_values)
+    if driver_values:
+        where_clauses.append("driver_id::text = ANY(%s)")
+        params.append(driver_values)
+    if user_filter_ids:
+        where_clauses.append("user_id::text = ANY(%s)")
+        params.append(user_filter_ids)
+
+    sql = f"""
+        SELECT
+            alert_id As "Alert ID",
+            tenant_id AS "Tenant ID",
+            CASE
+                WHEN tenant_id::text = '20220' THEN 'AFP 2024'
+                WHEN tenant_id::text = '7960'  THEN 'ABC'
+                ELSE 'Others'
+            END AS "Tenant Name",
+            driver_id AS "Driver ID",
+            vehicle_id AS "Vehicle ID",
+            alert_time_stamp AS "Alert Time Stamp",
+            CASE action_type
+                WHEN 1 THEN 'View only'
+                WHEN 2 THEN 'Comment only'
+                WHEN 3 THEN 'Added to watchlist'
+                WHEN 4 THEN 'Removed from watchlist'
+                WHEN 5 THEN 'No action needed'
+                WHEN 6 THEN 'Contact successful'
+                WHEN 7 THEN 'Contact unsuccessful'
+                ELSE CAST(action_type AS TEXT)
+            END AS "Action Type",
+            comment AS "Comment",
+            user_id,
+            created_on AS "Action taken On"
+        FROM ndlivemanagementlogs
+        WHERE {' AND '.join(where_clauses)}
+        ORDER BY created_on DESC
+    """
+
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = [_clean(dict(row)) for row in cur.fetchall()]
+
+        user_ids = [str(row.get("user_id")) for row in rows if row.get("user_id") is not None]
+        user_name_map = _fetch_user_name_map_from_ops_dashboard(user_ids)
+
+        for row in rows:
+            user_id = row.get("user_id")
+            user_id_str = str(user_id).strip() if user_id is not None else ""
+            row["User Name"] = user_name_map.get(user_id_str) or user_id_str or None
+            row.pop("user_id", None)
+
+        return rows
+    finally:
+        conn.close()
+
+
 def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
     """
     Fetch drowsy alerts within a UTC time window.
@@ -332,7 +463,7 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
         conn.close()
 
     # Enrich with management-action details from ndlivemanagementlogs and
-    # compute "Action taken in Minutes" and the "SLA Compliance" verdict.
+    # compute "Initial Action taken in Minutes" and the "SLA Compliance" verdict.
     logs_by_alert = fetch_action_logs([r.get("Alert ID") for r in results])
     for row in results:
         log = logs_by_alert.get(str(row.get("Alert ID")))
@@ -349,7 +480,7 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
             minutes = int((action_on - alert_created).total_seconds() / 60)
         else:
             minutes = None
-        row["Action taken in Minutes"] = minutes
+        row["Initial Action taken in Minutes"] = minutes
 
         if log is None or comment is None or str(comment).strip() == "":
             row["SLA Compliance"] = "No Action Taken"
