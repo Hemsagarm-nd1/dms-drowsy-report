@@ -546,6 +546,13 @@ def fmt_ts(ts, tz: ZoneInfo) -> str:
     if isinstance(ts, datetime):
         aware = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
         return aware.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Some environments return timestamp-like strings (sometimes with fractional
+    # seconds). Parse and normalize so EC2/localhost display is consistent.
+    parsed = pd.to_datetime(ts, errors="coerce", utc=True)
+    if pd.notna(parsed):
+        return parsed.tz_convert(str(tz)).strftime("%Y-%m-%d %H:%M:%S")
+
     return str(ts)
 
 
