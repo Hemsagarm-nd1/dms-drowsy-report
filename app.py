@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import json
 import sqlite3
@@ -437,6 +438,42 @@ section[data-testid="stSidebar"] [data-testid="stDownloadButton"] > button {
 .st-key-report_header_row_data .st-key-download_xlsx_data_header .stDownloadButton > button {
     width: auto;
 }
+
+/* HTML report table: clickable, copy-safe links. */
+.dms-report-table-wrap {
+    max-height: 500px;
+    overflow: auto;
+    border: 1px solid var(--dms-border);
+    border-radius: 10px;
+}
+.dms-report-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.86rem;
+    white-space: nowrap;
+}
+.dms-report-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--dms-panel);
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--dms-border);
+    font-weight: 600;
+}
+.dms-report-table tbody td {
+    padding: 0.45rem 0.75rem;
+    border-bottom: 1px solid var(--dms-border);
+}
+.dms-report-table tbody tr:hover td {
+    background: rgba(125, 125, 125, 0.08);
+}
+.dms-report-table a {
+    color: #2563eb;
+    text-decoration: underline;
+    cursor: pointer;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -867,17 +904,10 @@ def _history_search_href(field_key: str, value) -> str:
 
 def _make_history_link_df(display_df: pd.DataFrame) -> pd.DataFrame:
     link_df = display_df.copy()
-    field_map = {
-        "Alert ID": "alert_id",
-        "Driver ID": "driver_id",
-        "Vehicle ID": "vehicle_id",
-        "User Name": "user_name",
-    }
-    for column_name, field_key in field_map.items():
-        if column_name in link_df.columns:
-            link_df[column_name] = link_df[column_name].map(
-                lambda value: _history_search_href(field_key, value)
-            )
+    if "Alert ID" in link_df.columns:
+        link_df["Go to History"] = link_df["Alert ID"].map(
+            lambda value: _history_search_href("alert_id", value)
+        )
     return link_df
 
 
@@ -975,29 +1005,59 @@ def render_table(rows: list[dict], key: str = "data"):
             }.get(str(val), str(val))
         )
 
-    table_data = _make_history_link_df(table_df)
-
     header_row = st.container(key=f"report_header_row_{key}")
     with header_row:
         h_left, h_right = st.columns([1, 1], vertical_alignment="center")
         with h_left:
-            st.caption("Click Alert ID, Driver ID, Vehicle ID, or User Name to open History search.")
+            st.caption("Copy-friendly table view. Click an Alert ID, Driver ID, Vehicle ID, or User Name to open it in History search.")
         with h_right:
             _render_download_button(display_df, key=f"{key}_header")
 
-    st.dataframe(
-        table_data,
-        use_container_width=True,
-        hide_index=True,
-        height=500,
-        column_config={
-            "Alert ID": st.column_config.LinkColumn("Alert ID", display_text=r".*[?&]label=([^&]+).*"),
-            "Driver ID": st.column_config.LinkColumn("Driver ID", display_text=r".*[?&]label=([^&]+).*"),
-            "Vehicle ID": st.column_config.LinkColumn("Vehicle ID", display_text=r".*[?&]label=([^&]+).*"),
-            "User Name": st.column_config.LinkColumn("User Name", display_text=r".*[?&]label=([^&]+).*"),
-        },
-    )
+    _render_html_report_table(table_df)
     st.caption(f"{len(display_df)} alert(s) shown")
+
+
+_HISTORY_LINK_COLUMNS = {
+    "Alert ID": "alert_id",
+    "Driver ID": "driver_id",
+    "Vehicle ID": "vehicle_id",
+    "User Name": "user_name",
+}
+
+
+def _render_html_report_table(table_df: pd.DataFrame):
+    columns = list(table_df.columns)
+    head_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in columns)
+
+    body_rows = []
+    for _, row in table_df.iterrows():
+        cells = []
+        for col in columns:
+            value = row[col]
+            text = "" if value is None or pd.isna(value) else str(value)
+            field_key = _HISTORY_LINK_COLUMNS.get(col)
+            if field_key and text and text.lower() not in {"none", "nan"}:
+                href = _history_search_href(field_key, value)
+                if href:
+                    cell = (
+                        f'<a href="{html.escape(href, quote=True)}" target="_self" '
+                        f'title="Open in History">{html.escape(text)}</a>'
+                    )
+                else:
+                    cell = html.escape(text)
+            else:
+                cell = html.escape(text)
+            cells.append(f"<td>{cell}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    table_html = (
+        '<div class="dms-report-table-wrap">'
+        '<table class="dms-report-table">'
+        f"<thead><tr>{head_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
 def render_history_table(rows: list[dict]):
@@ -1013,6 +1073,16 @@ def render_history_table(rows: list[dict]):
         height=500,
     )
     st.caption(f"{len(display_df)} history record(s) shown")
+
+
+def _reset_history_state():
+    st.session_state["history_alert_id"] = ""
+    st.session_state["history_driver_id"] = ""
+    st.session_state["history_vehicle_id"] = ""
+    st.session_state["history_user_name"] = ""
+    st.session_state["history_results"] = []
+    st.session_state["history_searched"] = False
+    st.session_state["history_query_key"] = ""
 
 
 # ── Layout: content + left filters ───────────────────────────────────────────
@@ -1308,33 +1378,30 @@ with content_col:
             history_alert_id = st.text_input(
                 "Alert ID",
                 key="history_alert_id",
-                placeholder="5979351119",
             )
         with h2:
             history_driver_id = st.text_input(
                 "Driver ID",
                 key="history_driver_id",
-                placeholder="2308221",
             )
         with h3:
             history_vehicle_id = st.text_input(
                 "Vehicle ID",
                 key="history_vehicle_id",
-                placeholder="Vehicle ID",
             )
         with h4:
             history_user_name = st.text_input(
                 "User Name",
                 key="history_user_name",
-                placeholder="John Doe",
             )
 
         actions_row = st.container(key="history_actions")
         with actions_row:
-            a_left, a_right = st.columns([1, 1], vertical_alignment="center")
+            a_left, a_right = st.columns([1, 2], vertical_alignment="center")
             with a_left:
                 history_search = st.button("Search History", key="search_history")
             with a_right:
+                st.button("Reset History", key="reset_history", on_click=_reset_history_state)
                 history_results = st.session_state.get("history_results", [])
                 if st.session_state.get("history_searched") and history_results:
                     history_display_df = build_display_df(history_results)
