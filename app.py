@@ -1009,7 +1009,7 @@ def render_table(rows: list[dict], key: str = "data"):
     with header_row:
         h_left, h_right = st.columns([1, 1], vertical_alignment="center")
         with h_left:
-            st.caption("Copy-friendly table view. Click an Alert ID, Driver ID, Vehicle ID, or User Name to open it in History search.")
+            st.caption("Click an Alert ID, Driver ID, Vehicle ID, or User Name to open it in History search.")
         with h_right:
             _render_download_button(display_df, key=f"{key}_header")
 
