@@ -7,7 +7,7 @@ from datetime import datetime
 from config import (
     DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
     RO_DB_HOST, RO_DB_PORT, RO_DB_NAME, RO_DB_USER, RO_DB_PASSWORD,
-    EVENT_CODES, TENANT_IDS,
+    EVENT_CODES, TENANT_IDS, FLEET_NAMES,
 )
 
 VERBOSE = os.getenv("DMS_REPORT_VERBOSE", "").lower() in {"1", "true", "yes", "on"}
@@ -16,6 +16,18 @@ VERBOSE = os.getenv("DMS_REPORT_VERBOSE", "").lower() in {"1", "true", "yes", "o
 def _log(message: str):
     if VERBOSE:
         print(f"[DMS-Report] {message}", file=sys.stderr)
+
+
+def _tenant_name_case_sql(column: str = "tenant_id") -> str:
+    """Build a SQL CASE expression mapping tenant IDs to fleet names from config."""
+    whens = []
+    for tenant_id, fleet_name in FLEET_NAMES.items():
+        safe_id = str(tenant_id).replace("'", "''")
+        safe_name = str(fleet_name).replace("'", "''")
+        whens.append(f"WHEN {column}::text = '{safe_id}' THEN '{safe_name}'")
+    whens_sql = "\n                ".join(whens) if whens else ""
+    branches = f"{whens_sql}\n                ELSE 'Others'" if whens_sql else "ELSE 'Others'"
+    return f"CASE\n                {branches}\n            END"
 
 
 # Allow service/runtime-specific Python path injection for OAC package.
@@ -377,11 +389,7 @@ def fetch_history_logs(
         SELECT
             alert_id As "Alert ID",
             tenant_id AS "Tenant ID",
-            CASE
-                WHEN tenant_id::text = '20220' THEN 'AFP 2024'
-                WHEN tenant_id::text = '7960'  THEN 'ABC'
-                ELSE 'Others'
-            END AS "Tenant Name",
+            {_tenant_name_case_sql()} AS "Tenant Name",
             driver_id AS "Driver ID",
             vehicle_id AS "Vehicle ID",
             alert_time_stamp AS "Alert Time Stamp",
@@ -441,15 +449,11 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
 
     tenant_ids_str = [str(t) for t in TENANT_IDS]
 
-    sql = """
+    sql = f"""
         SELECT
             alert_id AS "Alert ID",
             tenant_id AS "Tenant ID",
-            CASE
-                WHEN tenant_id::text = '20220' THEN 'AFP 2024'
-                WHEN tenant_id::text = '7960'  THEN 'ABC'
-                ELSE 'Others'
-            END AS "Tenant Name",
+            {_tenant_name_case_sql()} AS "Tenant Name",
             driver_id AS "Driver ID",
             vehicle_id AS "Vehicle ID",
             time_stamp AS "Alert Time Stamp",
