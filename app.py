@@ -17,7 +17,9 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 from config import (
+    FLEET_NAMES,
     SQLITE_DB_PATH,
+    TENANT_IDS,
     TIMEZONE_OPTIONS,
 )
 from db import fetch_alerts, fetch_history_logs
@@ -1091,11 +1093,14 @@ content_col = st.container()
 filters_container = st.sidebar
 
 with content_col:
+    _fleets_sub = " · ".join(
+        f"{FLEET_NAMES.get(str(tid), str(tid))} (tenant {tid})" for tid in TENANT_IDS
+    )
     st.markdown(
-        """
+        f"""
         <div class="dms-main-header">
             <div class="dms-main-title">DMS Drowsy Report Dashboard</div>
-            <div class="dms-main-sub">Monitoring fleets: Amazon AFP (tenant 20220) · ABC Supply (tenant 7960)</div>
+            <div class="dms-main-sub">Monitoring fleets: {html.escape(_fleets_sub)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1337,20 +1342,26 @@ for a in alerts:
     filtered.append(a)
 
 with content_col:
-    amazon_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "20220"]
-    abc_alerts = [a for a in filtered if str(a.get("Tenant ID")) == "7960"]
+    # Map each configured tenant to the Tenant Name(s) present in the alerts.
+    tenant_names_by_id = {}
+    for a in alerts:
+        name = a.get("Tenant Name")
+        if name:
+            tenant_names_by_id.setdefault(str(a.get("Tenant ID")), set()).add(name)
 
-    show_amazon = "AFP 2024" in selected_fleets
-    show_abc = "ABC" in selected_fleets
-    metric_cols = st.columns(1 + int(show_amazon) + int(show_abc))
-    col_idx = 0
-    metric_cols[col_idx].metric("Total Alerts", len(filtered))
-    col_idx += 1
-    if show_amazon:
-        metric_cols[col_idx].metric("Amazon AFP", len(amazon_alerts))
-        col_idx += 1
-    if show_abc:
-        metric_cols[col_idx].metric("ABC Supply", len(abc_alerts))
+    selected_fleet_set = set(selected_fleets)
+    visible_fleets = []
+    for tid in TENANT_IDS:
+        tid_str = str(tid)
+        names = tenant_names_by_id.get(tid_str, set())
+        if names & selected_fleet_set:
+            count = len([a for a in filtered if str(a.get("Tenant ID")) == tid_str])
+            visible_fleets.append((FLEET_NAMES.get(tid_str, tid_str), count))
+
+    metric_cols = st.columns(1 + len(visible_fleets))
+    metric_cols[0].metric("Total Alerts", len(filtered))
+    for idx, (label, count) in enumerate(visible_fleets, start=1):
+        metric_cols[idx].metric(label, count)
 
 
     reports_tab, graphical_tab, history_tab = st.tabs(["Alert Details", "Graphical Representation", "History"])

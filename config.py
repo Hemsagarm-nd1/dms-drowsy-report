@@ -25,11 +25,12 @@ POLL_INTERVAL_SECONDS = 30
 SQLITE_DB_PATH = "dashboard_cache.db"
 
 # Fleet definitions
-TENANT_IDS = [20220, 7960]
+TENANT_IDS = [20220, 7960, 15771]
 
 FLEET_NAMES = {
     "20220": "Amazon AFP",
     "7960": "ABC Supply",
+    "15771": "Prime, Inc"
 }
 
 # DMS drowsy event codes
