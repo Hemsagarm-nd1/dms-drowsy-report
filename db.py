@@ -256,7 +256,7 @@ def fetch_action_logs(alert_ids: list) -> dict:
         A single alert can have multiple log entries (one per comment). For each
         alert_id we return:
             - the latest comment / action type / user (most recent created_on)
-            - "Initial Action taken On" = the earliest created_on for that alert_id
+            - "First action taken at" = the earliest created_on for that alert_id
 
     Returns a mapping of alert_id (as str) -> dict of those fields.
     """
@@ -330,7 +330,7 @@ def fetch_action_logs(alert_ids: list) -> dict:
                     "Action Type": action_type_label,
                     "Comment": comment,
                     "User Name": user_name or user_id_str or None,
-                    "Initial Action taken On": first_action_on,
+                    "First action taken at": first_action_on,
                 }
             return out
     finally:
@@ -342,6 +342,8 @@ def fetch_history_logs(
     driver_ids: list[str] | None = None,
     vehicle_ids: list[str] | None = None,
     user_names: list[str] | None = None,
+    start_utc: datetime | None = None,
+    end_utc: datetime | None = None,
 ) -> list[dict]:
     """Fetch management log history matching alert, driver, vehicle, or user-name filters."""
     def _normalize_numeric_text(value) -> str:
@@ -384,6 +386,15 @@ def fetch_history_logs(
     if user_filter_ids:
         where_clauses.append("user_id::text = ANY(%s)")
         params.append(user_filter_ids)
+
+    # Constrain driver / vehicle / user-name searches to the selected date range.
+    # Exact Alert ID lookups are not date-constrained.
+    if not alert_values and start_utc is not None and end_utc is not None:
+        start_naive = start_utc.replace(tzinfo=None) if start_utc.tzinfo else start_utc
+        end_naive = end_utc.replace(tzinfo=None) if end_utc.tzinfo else end_utc
+        where_clauses.append("alert_time_stamp BETWEEN %s AND %s")
+        params.append(start_naive)
+        params.append(end_naive)
 
     sql = f"""
         SELECT
@@ -479,28 +490,30 @@ def fetch_alerts(start_utc: datetime, end_utc: datetime) -> list[dict]:
         conn.close()
 
     # Enrich with management-action details from ndlivemanagementlogs and
-    # compute "Initial Action taken in Minutes" and the "SLA Compliance" verdict.
+    # compute "Time taken for first action" and the "SLA Compliance" verdict.
     logs_by_alert = fetch_action_logs([r.get("Alert ID") for r in results])
     for row in results:
         log = logs_by_alert.get(str(row.get("Alert ID")))
         row["Action Type"] = log["Action Type"] if log else None
         row["Latest Comment"] = log["Comment"] if log else None
         row["User Name"] = log["User Name"] if log else None
-        row["Initial Action taken On"] = log["Initial Action taken On"] if log else None
+        row["First action taken at"] = log["First action taken at"] if log else None
 
         alert_created = row.get("Alert Created on Cloud")
-        action_on = row.get("Initial Action taken On")
+        action_on = row.get("First action taken at")
         comment = row.get("Latest Comment")
 
         if action_on is not None and alert_created is not None:
-            minutes = int((action_on - alert_created).total_seconds() / 60)
+            total_seconds = (action_on - alert_created).total_seconds()
+            minutes = int(total_seconds / 60)
         else:
+            total_seconds = None
             minutes = None
-        row["Initial Action taken in Minutes"] = minutes
+        row["Time taken for first action"] = minutes
 
         if log is None or comment is None or str(comment).strip() == "":
-            row["SLA Compliance"] = "No Action Taken"
-        elif minutes is not None and minutes <= 5:
+            row["SLA Compliance"] = "Not Reviewed"
+        elif total_seconds is not None and total_seconds <= 300:
             row["SLA Compliance"] = "Compliant"
         else:
             row["SLA Compliance"] = "Breached"

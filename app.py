@@ -631,7 +631,7 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
         # Friendly duration for initial action (e.g. 2m 54s).
         action_duration = None
         alert_created_raw = record.get("Alert Created on Cloud")
-        initial_action_raw = record.get("Initial Action taken On")
+        initial_action_raw = record.get("First action taken at")
         if alert_created_raw is not None and initial_action_raw is not None:
             alert_created_ts = pd.to_datetime(alert_created_raw, errors="coerce")
             initial_action_ts = pd.to_datetime(initial_action_raw, errors="coerce")
@@ -640,12 +640,12 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
                 if total_seconds >= 0:
                     minutes, seconds = divmod(total_seconds, 60)
                     action_duration = f"{minutes}m {seconds}s"
-        if action_duration is None and "Initial Action taken in Minutes" in record:
-            raw_minutes = pd.to_numeric(record.get("Initial Action taken in Minutes"), errors="coerce")
+        if action_duration is None and "Time taken for first action" in record:
+            raw_minutes = pd.to_numeric(record.get("Time taken for first action"), errors="coerce")
             if pd.notna(raw_minutes):
                 action_duration = f"{int(raw_minutes)}m 0s"
         if action_duration is not None:
-            record["Initial Action taken in"] = action_duration
+            record["Time taken for first action"] = action_duration
 
         if "time_stamp" in record:
             record["time_stamp"] = fmt_ts(record.get("time_stamp"), selected_tz)
@@ -653,8 +653,8 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
             record["Alert Time Stamp"] = fmt_ts(record.get("Alert Time Stamp"), selected_tz)
         if "Alert Created on Cloud" in record:
             record["Alert Created on Cloud"] = fmt_ts(record.get("Alert Created on Cloud"), selected_tz)
-        if "Initial Action taken On" in record:
-            record["Initial Action taken On"] = fmt_ts(record.get("Initial Action taken On"), selected_tz)
+        if "First action taken at" in record:
+            record["First action taken at"] = fmt_ts(record.get("First action taken at"), selected_tz)
         if "Action taken On" in record:
             record["Action taken On"] = fmt_ts(record.get("Action taken On"), selected_tz)
         if "created_on" in record:
@@ -662,8 +662,6 @@ def build_display_df(rows: list[dict]) -> pd.DataFrame:
         if "Created On" in record:
             record["Created On"] = fmt_ts(record.get("Created On"), selected_tz)
 
-        # Keep only the human-friendly duration column in the table.
-        record.pop("Initial Action taken in Minutes", None)
         records.append(record)
     df = pd.DataFrame(records)
     if "Driver ID" in df.columns:
@@ -691,15 +689,20 @@ if "db_fetch_count" not in st.session_state:
 # ── Chart + table renderers ───────────────────────────────────────────────────
 
 SLA_COLOR_SCALE = alt.Scale(
-    domain=["Compliant", "Breached", "No Action Taken"],
+    domain=["Compliant", "Breached", "Not Reviewed"],
     range=["#16a34a", "#a855f7", "#dc2626"],
 )
 
 
-def render_pie(rows: list[dict], field: str, color_scale=None, missing_label: str = "None"):
+def render_pie(rows: list[dict], field: str, color_scale=None, missing_label: str = "None", all_categories: list[str] | None = None):
     vals = [(r.get(field) if r.get(field) not in (None, "") else missing_label) for r in rows]
     src = pd.DataFrame({field: vals})
     agg = src.groupby(field).size().reset_index(name="count")
+    if all_categories:
+        counts = dict(zip(agg[field], agg["count"]))
+        agg = pd.DataFrame(
+            {field: all_categories, "count": [int(counts.get(cat, 0)) for cat in all_categories]}
+        )
     if agg.empty:
         st.info("No data.")
         return
@@ -767,7 +770,7 @@ def render_volume_by_sla_chart(rows: list[dict], tz: ZoneInfo, granularity: str)
     data = [
         {
             "ts": r.get("Alert Time Stamp"),
-            "SLA Compliance": r.get("SLA Compliance") or "No Action Taken",
+            "SLA Compliance": r.get("SLA Compliance") or "Not Reviewed",
         }
         for r in rows
         if r.get("Alert Time Stamp") is not None
@@ -814,7 +817,7 @@ def render_volume_by_sla_chart(rows: list[dict], tz: ZoneInfo, granularity: str)
     st.altair_chart(chart, use_container_width=True)
 
 
-def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
+def render_home(rows: list[dict], tz: ZoneInfo, granularity: str, fleet_categories: list[str] | None = None):
     if not rows:
         st.info("No alerts match the current filters.")
         return
@@ -824,10 +827,10 @@ def render_home(rows: list[dict], tz: ZoneInfo, granularity: str):
         render_pie(rows, "SLA Compliance", SLA_COLOR_SCALE)
     with p2:
         st.markdown("**Alerts by Fleet**")
-        render_pie(rows, "Tenant Name")
+        render_pie(rows, "Tenant Name", all_categories=fleet_categories)
     with p3:
         st.markdown("**Action Type**")
-        render_pie(rows, "Action Type", missing_label="Missed")
+        render_pie(rows, "Action Type", missing_label="Not Reviewed")
     st.subheader(f"{granularity} Alert Trend")
     render_volume_chart(rows, tz, granularity)
     st.subheader(f"{granularity} Alert Trend by SLA Status")
@@ -842,8 +845,8 @@ def _prepare_export_df(rows: list[dict]) -> pd.DataFrame:
         rename_map["Alert Time Stamp"] = f"Alert Time Stamp ({tz_short})"
     if "Alert Created on Cloud" in display_df.columns:
         rename_map["Alert Created on Cloud"] = f"Alert Created on Cloud ({tz_short})"
-    if "Initial Action taken On" in display_df.columns:
-        rename_map["Initial Action taken On"] = f"Initial Action taken On ({tz_short})"
+    if "First action taken at" in display_df.columns:
+        rename_map["First action taken at"] = f"First action taken at ({tz_short})"
     if rename_map:
         display_df = display_df.rename(columns=rename_map)
     return display_df
@@ -938,6 +941,8 @@ def _sync_history_state_from_query_params():
             driver_ids=[history_params["history_driver_id"]],
             vehicle_ids=[history_params["history_vehicle_id"]],
             user_names=[history_params["history_user_name"]],
+            start_utc=get_stored_start_ts(),
+            end_utc=get_stored_end_ts(),
         )
         st.session_state["history_searched"] = True
         st.session_state["history_query_key"] = query_key
@@ -1003,7 +1008,7 @@ def render_table(rows: list[dict], key: str = "data"):
             lambda val: {
                 "Compliant": "🟢 Compliant",
                 "Breached": "🟣 Breached",
-                "No Action Taken": "🔴 No Action Taken",
+                "Not Reviewed": "🔴 Not Reviewed",
             }.get(str(val), str(val))
         )
 
@@ -1042,8 +1047,8 @@ def _render_html_report_table(table_df: pd.DataFrame):
                 href = _history_search_href(field_key, value)
                 if href:
                     cell = (
-                        f'<a href="{html.escape(href, quote=True)}" target="_self" '
-                        f'title="Open in History">{html.escape(text)}</a>'
+                        f'<a href="{html.escape(href, quote=True)}" target="_blank" '
+                        f'rel="noopener noreferrer" title="Open in History">{html.escape(text)}</a>'
                     )
                 else:
                     cell = html.escape(text)
@@ -1200,6 +1205,7 @@ with filters_container:
             dates = st.date_input(
                 "Select Date Range",
                 value=(now_local.date() - timedelta(days=1), now_local.date()),
+                min_value=now_local.date() - timedelta(days=183),
                 max_value=now_local.date(),
                 key="custom_date_range",
             )
@@ -1230,10 +1236,13 @@ with filters_container:
     if range_label == "Custom Date":
         # Custom range: wait for the user to confirm with Apply.
         if st.button("Apply time window", use_container_width=True, key="apply_window"):
+            six_months_ago = now_local - timedelta(days=183)
             if local_end < local_start:
                 st.error("End time must be after start time.")
-            elif (local_end - local_start).days > 31:
-                st.error("Custom Date range cannot exceed 31 days.")
+            elif local_start < six_months_ago:
+                st.error("Custom Date range cannot go back more than 6 months.")
+            elif (local_end - local_start).days > 183:
+                st.error("Custom Date range cannot exceed 6 months.")
             else:
                 set_time_window(local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc))
                 st.success("Time window applied.")
@@ -1292,9 +1301,9 @@ with filters_container:
     st.divider()
 
     def _action_type_value(v):
-        return v if v not in (None, "") else "Missed"
+        return v if v not in (None, "") else "Not Reviewed"
 
-    fleet_options = sorted({a.get("Tenant Name") for a in alerts if a.get("Tenant Name")})
+    fleet_options = list(FLEET_NAMES.values())
     if "fleet_filter" not in st.session_state:
         st.session_state["fleet_filter"] = list(fleet_options)
     else:
@@ -1342,21 +1351,16 @@ for a in alerts:
     filtered.append(a)
 
 with content_col:
-    # Map each configured tenant to the Tenant Name(s) present in the alerts.
-    tenant_names_by_id = {}
-    for a in alerts:
-        name = a.get("Tenant Name")
-        if name:
-            tenant_names_by_id.setdefault(str(a.get("Tenant ID")), set()).add(name)
-
+    # Show every configured tenant that is selected, even with a 0 alert count.
     selected_fleet_set = set(selected_fleets)
     visible_fleets = []
     for tid in TENANT_IDS:
         tid_str = str(tid)
-        names = tenant_names_by_id.get(tid_str, set())
-        if names & selected_fleet_set:
-            count = len([a for a in filtered if str(a.get("Tenant ID")) == tid_str])
-            visible_fleets.append((FLEET_NAMES.get(tid_str, tid_str), count))
+        label = FLEET_NAMES.get(tid_str, tid_str)
+        if label not in selected_fleet_set:
+            continue
+        count = len([a for a in filtered if str(a.get("Tenant ID")) == tid_str])
+        visible_fleets.append((label, count))
 
     metric_cols = st.columns(1 + len(visible_fleets))
     metric_cols[0].metric("Total Alerts", len(filtered))
@@ -1377,7 +1381,7 @@ with content_col:
         if not alerts:
             st.success("No drowsy alerts found in the selected time window.")
         else:
-            render_home(filtered, selected_tz, granularity)
+            render_home(filtered, selected_tz, granularity, fleet_categories=[label for label, _ in visible_fleets])
             st.divider()
             _render_download_button(_prepare_export_df(filtered), key="graphical")
 
@@ -1431,12 +1435,38 @@ with content_col:
                     driver_ids=[history_driver_id],
                     vehicle_ids=[history_vehicle_id],
                     user_names=[history_user_name],
+                    start_utc=stored_start,
+                    end_utc=stored_end,
                 )
                 st.session_state["history_searched"] = True
+                st.session_state["history_window_key"] = window_key_str
             except Exception as exc:
                 st.error(f"History query failed: {exc}")
                 st.session_state["history_results"] = []
                 st.session_state["history_searched"] = True
+                st.session_state["history_window_key"] = window_key_str
+
+        # Auto re-run a date-constrained search (Driver/Vehicle/User) when the
+        # selected timeframe changes, without waiting for another Search click.
+        # Alert ID searches are not date-constrained, so they are skipped here.
+        elif (
+            st.session_state.get("history_searched")
+            and st.session_state.get("history_window_key") != window_key_str
+            and any(str(v).strip() for v in (history_driver_id, history_vehicle_id, history_user_name))
+        ):
+            try:
+                st.session_state["history_results"] = fetch_history_logs(
+                    alert_ids=[history_alert_id],
+                    driver_ids=[history_driver_id],
+                    vehicle_ids=[history_vehicle_id],
+                    user_names=[history_user_name],
+                    start_utc=stored_start,
+                    end_utc=stored_end,
+                )
+            except Exception as exc:
+                st.error(f"History query failed: {exc}")
+                st.session_state["history_results"] = []
+            st.session_state["history_window_key"] = window_key_str
 
         if st.session_state.get("history_searched"):
             render_history_table(st.session_state.get("history_results", []))
