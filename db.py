@@ -337,6 +337,41 @@ def fetch_action_logs(alert_ids: list) -> dict:
         conn.close()
 
 
+def fetch_alert_created_on_map(alert_ids: list) -> dict:
+    """Look up "Alert Created on Cloud" (ndalerts.created_on) for the given alert_ids.
+
+    ndalerts lives on the read-only DB, separate from ndlivemanagementlogs, so this
+    is fetched separately and merged into history results by callers.
+
+    Returns a mapping of alert_id (as str) -> created_on datetime.
+    """
+    ids = []
+    for a in alert_ids:
+        if a is None:
+            continue
+        try:
+            ids.append(int(a))
+        except (TypeError, ValueError):
+            continue
+    ids = list(set(ids))
+    if not ids:
+        return {}
+
+    sql = """
+        SELECT alert_id, created_on
+        FROM ndalerts
+        WHERE alert_id = ANY(%s)
+    """
+
+    conn = get_ro_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (ids,))
+            return {str(alert_id): created_on for alert_id, created_on in cur.fetchall()}
+    finally:
+        conn.close()
+
+
 def fetch_history_logs(
     alert_ids: list[str] | None = None,
     driver_ids: list[str] | None = None,
@@ -431,13 +466,27 @@ def fetch_history_logs(
         user_ids = [str(row.get("user_id")) for row in rows if row.get("user_id") is not None]
         user_name_map = _fetch_user_name_map_from_ops_dashboard(user_ids)
 
+        alert_created_map = fetch_alert_created_on_map([row.get("Alert ID") for row in rows])
+
+        enriched = []
         for row in rows:
             user_id = row.get("user_id")
             user_id_str = str(user_id).strip() if user_id is not None else ""
             row["User Name"] = user_name_map.get(user_id_str) or user_id_str or None
             row.pop("user_id", None)
 
-        return rows
+            # Insert "Alert Created on Cloud" right after "Alert Time Stamp".
+            alert_created = alert_created_map.get(str(row.get("Alert ID")))
+            ordered = {}
+            for key, value in row.items():
+                ordered[key] = value
+                if key == "Alert Time Stamp":
+                    ordered["Alert Created on Cloud"] = alert_created
+            if "Alert Created on Cloud" not in ordered:
+                ordered["Alert Created on Cloud"] = alert_created
+            enriched.append(ordered)
+
+        return enriched
     finally:
         conn.close()
 
