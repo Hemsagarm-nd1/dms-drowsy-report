@@ -694,6 +694,33 @@ SLA_COLOR_SCALE = alt.Scale(
 )
 
 
+_FLEET_PALETTE = [
+    "#0284c7", "#16a34a", "#f59e0b", "#8b5cf6",
+    "#ec4899", "#14b8a6", "#ef4444", "#64748b",
+]
+
+
+def _fleet_color_map() -> dict[str, str]:
+    """Fixed color per fleet/tenant name so colors stay consistent across charts."""
+    names = list(dict.fromkeys([*FLEET_NAMES.values(), "Others"]))
+    return {name: _FLEET_PALETTE[i % len(_FLEET_PALETTE)] for i, name in enumerate(names)}
+
+
+def fleet_color_scale(categories: list[str] | None = None, include_total: bool = False) -> alt.Scale:
+    """Consistent color mapping per fleet/tenant, shared across pie and line charts.
+
+    Only the categories passed in are included in the scale domain, so unused
+    fleets (e.g. "Others") are not shown in the legend.
+    """
+    cmap = _fleet_color_map()
+    domain = list(categories) if categories else list(cmap.keys())
+    color_range = [cmap.get(name, "#64748b") for name in domain]
+    if include_total:
+        domain = [*domain, "Total"]
+        color_range = [*color_range, "#94a3b8"]
+    return alt.Scale(domain=domain, range=color_range)
+
+
 def render_pie(rows: list[dict], field: str, color_scale=None, missing_label: str = "None", all_categories: list[str] | None = None):
     vals = [(r.get(field) if r.get(field) not in (None, "") else missing_label) for r in rows]
     src = pd.DataFrame({field: vals})
@@ -730,9 +757,12 @@ def apply_volume_granularity(df: pd.DataFrame, granularity: str) -> tuple[str, s
     return "Date", "%Y-%m-%d", "day"
 
 
-def render_volume_chart(rows: list[dict], tz: ZoneInfo, granularity: str):
+def render_volume_chart(rows: list[dict], tz: ZoneInfo, granularity: str, tenant_categories: list[str] | None = None):
     data = [
-        {"ts": r.get("Alert Time Stamp")}
+        {
+            "ts": r.get("Alert Time Stamp"),
+            "Tenant Name": r.get("Tenant Name") or "Others",
+        }
         for r in rows
         if r.get("Alert Time Stamp") is not None
     ]
@@ -742,27 +772,83 @@ def render_volume_chart(rows: list[dict], tz: ZoneInfo, granularity: str):
     df = pd.DataFrame(data)
     df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(str(tz))
     axis_title, time_format, tick_unit = apply_volume_granularity(df, granularity)
-    agg = df.groupby("bucket").size().reset_index(name="Alerts")
-    chart = (
-        alt.Chart(agg)
-        .mark_area(opacity=0.35, line=True, point=True)
-        .encode(
-            x=alt.X(
-                "bucket:T", 
-                title=axis_title, 
-                axis=alt.Axis(
-                    format=time_format, 
-                    labelAngle=-45, 
-                    labelBound=True, 
-                    labelOverlap="parity",
-                    tickCount=tick_unit
-                )
-            ),
-            y=alt.Y("Alerts:Q", title="Alert count"),
-            tooltip=[alt.Tooltip("bucket:T", title=axis_title, format=time_format), "Alerts:Q"],
-        )
-        .properties(height=340)
+    agg = (
+        df.groupby(["bucket", "Tenant Name"]).size().reset_index(name="Alerts")
     )
+
+    # Ensure every selected tenant has a point in every bucket (drop to zero when
+    # there is no data). Tenants that are not selected in the filters are excluded.
+    buckets = sorted(agg["bucket"].unique())
+    tenants = list(tenant_categories) if tenant_categories else sorted(agg["Tenant Name"].unique())
+    if buckets and tenants:
+        full_index = pd.MultiIndex.from_product(
+            [buckets, tenants], names=["bucket", "Tenant Name"]
+        )
+        agg = (
+            agg.set_index(["bucket", "Tenant Name"])
+            .reindex(full_index, fill_value=0)
+            .reset_index()
+        )
+
+    # Add a "Total" line summing across all tenants per bucket.
+    total = agg.groupby("bucket")["Alerts"].sum().reset_index()
+    total["Tenant Name"] = "Total"
+    agg = pd.concat([agg, total], ignore_index=True)
+
+    series_names = tenants + ["Total"]
+    x_enc = alt.X(
+        "bucket:T",
+        title=axis_title,
+        axis=alt.Axis(
+            format=time_format,
+            labelAngle=-45,
+            labelBound=True,
+            labelOverlap="parity",
+            tickCount=tick_unit,
+        ),
+    )
+
+    lines = (
+        alt.Chart(agg)
+        .mark_line(point=alt.OverlayMarkDef(size=70, filled=True))
+        .encode(
+            x=x_enc,
+            y=alt.Y("Alerts:Q", title="Alert count"),
+            color=alt.Color(
+                "Tenant Name:N",
+                scale=fleet_color_scale(tenants, include_total=True),
+                legend=alt.Legend(
+                    orient="bottom",
+                    title=None,
+                    symbolType="circle",
+                    symbolSize=160,
+                    symbolStrokeWidth=0,
+                ),
+            ),
+        )
+    )
+
+    # Shared hover: a single vertical rule that reports every series' value at the
+    # hovered bucket, so overlapping points are all shown together.
+    nearest = alt.selection_point(
+        nearest=True, on="mouseover", fields=["bucket"], empty=False
+    )
+    rule = (
+        alt.Chart(agg)
+        .transform_pivot("Tenant Name", value="Alerts", groupby=["bucket"])
+        .mark_rule(color="gray")
+        .encode(
+            x=x_enc,
+            opacity=alt.condition(nearest, alt.value(0.3), alt.value(0)),
+            tooltip=[
+                alt.Tooltip("bucket:T", title=axis_title, format=time_format),
+                *[alt.Tooltip(f"{name}:Q", title=name) for name in series_names],
+            ],
+        )
+        .add_params(nearest)
+    )
+
+    chart = (lines + rule).properties(height=340)
     st.altair_chart(chart, use_container_width=True)
 
 
@@ -827,12 +913,12 @@ def render_home(rows: list[dict], tz: ZoneInfo, granularity: str, fleet_categori
         render_pie(rows, "SLA Compliance", SLA_COLOR_SCALE)
     with p2:
         st.markdown("**Alerts by Fleet**")
-        render_pie(rows, "Tenant Name", all_categories=fleet_categories)
+        render_pie(rows, "Tenant Name", color_scale=fleet_color_scale(fleet_categories), all_categories=fleet_categories)
     with p3:
         st.markdown("**Action Type**")
         render_pie(rows, "Action Type", missing_label="Not Reviewed")
     st.subheader(f"{granularity} Alert Trend")
-    render_volume_chart(rows, tz, granularity)
+    render_volume_chart(rows, tz, granularity, tenant_categories=fleet_categories)
     st.subheader(f"{granularity} Alert Trend by SLA Status")
     render_volume_by_sla_chart(rows, tz, granularity)
 
